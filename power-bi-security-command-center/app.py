@@ -1,16 +1,20 @@
 """Power BI Security & Governance Command Center.
 
-A local Streamlit tool with three modules:
+A local Streamlit tool with four modules:
   1. RLS Engine — merge HR Staff List + Rule_Book + Exceptions into Final_RLS.csv
-     (one row per user per store; Store_Access exploded on ":")
-  2. Delta Tracking — compare old vs new HR lists: Leavers / Joiners / Movers
+     (one row per user per store; Store_Access exploded on ":";
+     Store_Codes resolved to Store_Name via the Store Master)
+  2. Delta Tracking — compare old vs new HR lists: Leavers / Joiners / Movers,
+     plus unmapped Position/Department warnings
   3. Access Audit — log manually granted cloud access + Gap Analysis vs rules
+  4. Access Query Tool — effective access resolver (by user or by asset)
 
 Everything runs locally. No Power BI API needed.
 
 Run with: streamlit run app.py
 """
 
+import io
 from datetime import date
 
 import pandas as pd
@@ -29,7 +33,8 @@ st.set_page_config(
 EMAIL = "Work Email"
 DEPT = "Department"
 POS = "Position"
-STORE_ACCESS = "Store_Access"
+STORE_ACCESS = "Store_Access"   # holds Store_Code values (exploded)
+STORE_NAME = "Store_Name"       # user-friendly name from the Store Master
 REPORT_ACCESS = "Report_Access"
 
 STORE_SEP = ":"   # multi-store delimiter inside Store_Access
@@ -47,15 +52,49 @@ def _require_cols(df: pd.DataFrame, cols: list[str], label: str) -> None:
         raise ValueError(f"{label} is missing columns: {', '.join(missing)}")
 
 
+def _clean_str_df(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.fillna("")
+    for c in df.columns:
+        df[c] = df[c].astype(str).str.strip()
+    return df
+
+
+def read_csv_bytes(raw: bytes) -> tuple[pd.DataFrame, str]:
+    """Robust CSV reader. Tries utf-8-sig first (handles BOM + most files),
+    then plain utf-8, then cp1252 (covers é/ü-style Latin characters that
+    break utf-8 decoding), with latin-1 as the final safety net."""
+    for enc in ("utf-8-sig", "utf-8", "cp1252"):
+        try:
+            return pd.read_csv(io.BytesIO(raw), dtype=str, encoding=enc), enc
+        except (UnicodeDecodeError, UnicodeError):
+            continue
+    return pd.read_csv(io.BytesIO(raw), dtype=str, encoding="latin-1"), "latin-1"
+
+
+def read_table_upload(uploaded) -> pd.DataFrame:
+    """Read a CSV or Excel upload into a cleaned string dataframe.
+
+    Excel uploads (.xlsx/.xls) sidestep CSV encoding issues entirely.
+    The detected encoding is stored on df.attrs['source_encoding'].
+    """
+    name = uploaded.name.lower()
+    if name.endswith((".xlsx", ".xls")):
+        df = pd.read_excel(uploaded, dtype=str)
+        enc = "excel"
+    else:
+        df, enc = read_csv_bytes(uploaded.getvalue())
+    df = _clean_str_df(df)
+    df.attrs["source_encoding"] = enc
+    return df
+
+
 def read_hr_excel(uploaded, mapping: dict[str, str]) -> pd.DataFrame:
     """Read the HR Staff List Excel and rename raw columns to the canonical
     schema using the user-provided mapping.
 
     mapping: {"Work Email": <raw col>, "Department": <raw col>, "Position": <raw col>}
     """
-    df = pd.read_excel(uploaded, dtype=str).fillna("")
-    for c in df.columns:
-        df[c] = df[c].astype(str).str.strip()
+    df = _clean_str_df(pd.read_excel(uploaded, dtype=str))
 
     rename = {raw: canon for canon, raw in mapping.items() if raw and raw in df.columns}
     df = df.rename(columns=rename)
@@ -64,28 +103,20 @@ def read_hr_excel(uploaded, mapping: dict[str, str]) -> pd.DataFrame:
     return df
 
 
-def read_csv_upload(uploaded) -> pd.DataFrame:
-    df = pd.read_csv(uploaded, dtype=str).fillna("")
-    for c in df.columns:
-        df[c] = df[c].astype(str).str.strip()
-    return df
-
-
 def sample_rule_book() -> pd.DataFrame:
     return pd.DataFrame(
         [
-            {DEPT: "Store A", POS: "Manager", STORE_ACCESS: "Store A",
+            {DEPT: "A", POS: "Manager", STORE_ACCESS: "A",
              REPORT_ACCESS: "Sales Dashboard;Inventory Report;Staff Performance"},
-            {DEPT: "Store A", POS: "Sales", STORE_ACCESS: "Store A",
+            {DEPT: "A", POS: "Sales", STORE_ACCESS: "A",
              REPORT_ACCESS: "Sales Dashboard"},
-            {DEPT: "Store B", POS: "Manager", STORE_ACCESS: "Store B",
+            {DEPT: "B", POS: "Manager", STORE_ACCESS: "B",
              REPORT_ACCESS: "Sales Dashboard;Inventory Report;Staff Performance"},
-            {DEPT: "Store B", POS: "Sales", STORE_ACCESS: "Store B",
+            {DEPT: "B", POS: "Sales", STORE_ACCESS: "B",
              REPORT_ACCESS: "Sales Dashboard"},
-            {DEPT: "North Region", POS: "Regional Manager",
-             STORE_ACCESS: "Store A:Store C",
+            {DEPT: "*", POS: "Regional Manager", STORE_ACCESS: "A:C",
              REPORT_ACCESS: "Sales Dashboard;Inventory Report;Staff Performance;Regional Overview"},
-            {DEPT: "*", POS: "IT Officer", STORE_ACCESS: "Store A:Store B:Store C",
+            {DEPT: "*", POS: "IT Officer", STORE_ACCESS: "A:B:C",
              REPORT_ACCESS: "Sales Dashboard;Inventory Report"},
         ]
     )
@@ -94,17 +125,26 @@ def sample_rule_book() -> pd.DataFrame:
 def sample_exceptions() -> pd.DataFrame:
     return pd.DataFrame(
         [
-            {EMAIL: "temp.cover@example.com", STORE_ACCESS: "Store A:Store B",
+            {EMAIL: "temp.cover@example.com", STORE_ACCESS: "A:B",
              REPORT_ACCESS: "Sales Dashboard;Inventory Report",
              "Reason": "Covering Store B during renovation (until 2026-12-31)"},
         ]
     )
 
 
+def sample_store_master() -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {"Store_Code": "A", "Store_Name": "Flagship Store — Causeway Bay"},
+            {"Store_Code": "B", "Store_Name": "Tsim Sha Tsui Store"},
+            {"Store_Code": "C", "Store_Name": "Central Café Store"},
+        ]
+    )
+
+
 def explode_store_access(df: pd.DataFrame) -> pd.DataFrame:
-    """Flatten Store_Access on ':' so one user with 'Store A:Store B'
-    becomes two rows. Rows with no store keep a single blank row so they
-    stay visible for follow-up."""
+    """Flatten Store_Access on ':' so one user with 'A:B' becomes two rows.
+    Rows with no store keep a single blank row so they stay visible."""
     df = df.copy()
     parts = df[STORE_ACCESS].apply(lambda s: split_list(s, STORE_SEP))
     has_store = parts.map(len) > 0
@@ -116,18 +156,37 @@ def explode_store_access(df: pd.DataFrame) -> pd.DataFrame:
     rest = df[~has_store].copy()
     rest[STORE_ACCESS] = ""
 
-    out = pd.concat([exploded, rest], ignore_index=True)
-    return out.sort_values([EMAIL, STORE_ACCESS]).reset_index(drop=True)
+    return pd.concat([exploded, rest], ignore_index=True)
+
+
+def apply_store_master(df: pd.DataFrame, store_master: pd.DataFrame | None) -> pd.DataFrame:
+    """Join Store_Code -> Store_Name for display. Falls back to the code
+    itself when no master is provided or a code is unknown."""
+    df = df.copy()
+    if store_master is not None and not store_master.empty:
+        _require_cols(store_master, ["Store_Code", "Store_Name"], "Store_Master")
+        sm = store_master[["Store_Code", "Store_Name"]].drop_duplicates("Store_Code")
+        df = df.merge(sm, left_on=STORE_ACCESS, right_on="Store_Code", how="left")
+        df[STORE_NAME] = df[STORE_NAME].fillna(df[STORE_ACCESS])
+        df = df.drop(columns=["Store_Code"])
+    else:
+        df[STORE_NAME] = df[STORE_ACCESS]
+    cols = [EMAIL, DEPT, POS, STORE_ACCESS, STORE_NAME, REPORT_ACCESS, "Source"]
+    return df[cols].sort_values([EMAIL, STORE_ACCESS]).reset_index(drop=True)
 
 
 def simulate_rls(
-    hr: pd.DataFrame, rules: pd.DataFrame, exceptions: pd.DataFrame | None
+    hr: pd.DataFrame,
+    rules: pd.DataFrame,
+    exceptions: pd.DataFrame | None,
+    store_master: pd.DataFrame | None = None,
 ) -> tuple[pd.DataFrame, list[str]]:
     """Merge HR + Rule_Book (+ Exceptions) into the final RLS table.
 
-    Rule matching: exact (Department, Position) first, then wildcard
-    Department="*" fallback. Per-email exceptions win. Store_Access is
-    exploded on ':' into one row per store.
+    Rule matching on (Department, Position) — Department holds Store_Codes,
+    with "*" as the position-wide wildcard. Per-email exceptions win.
+    Store_Access is exploded on ':' into one row per store, then resolved
+    to Store_Name via the Store Master.
     Returns (final_df, warnings).
     """
     warnings: list[str] = []
@@ -156,9 +215,7 @@ def simulate_rls(
             )
             store, reports, source = "", "", "NO RULE"
         else:
-            store, reports, source = (
-                rule[STORE_ACCESS], rule[REPORT_ACCESS], "Rule_Book",
-            )
+            store, reports, source = rule[STORE_ACCESS], rule[REPORT_ACCESS], "Rule_Book"
         rows.append({
             EMAIL: person[EMAIL], DEPT: person[DEPT], POS: person[POS],
             STORE_ACCESS: store, REPORT_ACCESS: reports, "Source": source,
@@ -180,11 +237,38 @@ def simulate_rls(
                     merged.at[idx, REPORT_ACCESS] = ex[REPORT_ACCESS]
                 merged.at[idx, "Source"] = "Exception"
 
-    return explode_store_access(merged), warnings
+    return apply_store_master(explode_store_access(merged), store_master), warnings
+
+
+def check_unmapped_master_data(
+    hr: pd.DataFrame, rules: pd.DataFrame
+) -> tuple[list[str], list[str]]:
+    """Compare HR's unique Positions/Departments against the Rule_Book.
+    Returns (new_positions, new_departments) not defined in the rules."""
+    hr_pos = {p for p in hr[POS].unique() if p}
+    hr_dept = {d for d in hr[DEPT].unique() if d}
+    rule_pos = set(rules[POS].unique()) if POS in rules.columns else set()
+    rule_dept = (set(rules[DEPT].unique()) - {"*"}) if DEPT in rules.columns else set()
+    return sorted(hr_pos - rule_pos), sorted(hr_dept - rule_dept)
+
+
+def warn_unmapped(new_pos: list[str], new_dept: list[str]) -> None:
+    """Bright warning for master data the Rule_Book doesn't cover."""
+    if new_pos or new_dept:
+        details = []
+        if new_pos:
+            details.append(f"Positions: {', '.join(new_pos)}")
+        if new_dept:
+            details.append(f"Departments: {', '.join(new_dept)}")
+        st.error(
+            "🚨 **New Position/Department detected in HR List. "
+            "Please update the Rule Book to assign RLS logic.**\n\n" + "\n".join(details)
+        )
 
 
 def compute_deltas(
-    old: pd.DataFrame, new: pd.DataFrame, rules: pd.DataFrame | None
+    old: pd.DataFrame, new: pd.DataFrame, rules: pd.DataFrame | None,
+    store_master: pd.DataFrame | None = None,
 ) -> dict[str, pd.DataFrame]:
     """Anti-joins + change detection between two HR snapshots, joined
     strictly on the 'Work Email' column."""
@@ -197,7 +281,7 @@ def compute_deltas(
     # Suggest access for joiners from the Rule_Book.
     if rules is not None and not rules.empty and not joiners.empty:
         try:
-            joiners, _ = simulate_rls(joiners, rules, None)
+            joiners, _ = simulate_rls(joiners, rules, None, store_master)
         except ValueError:
             pass
 
@@ -252,6 +336,7 @@ def gap_analysis(
 for key, default in [
     ("hr_current", None),
     ("hr_current_name", ""),
+    ("store_master_current", None),
     ("audit_log", pd.DataFrame(
         columns=["Date", EMAIL, "Asset_Name", "Permission_Level", "Remark"])),
     ("final_rls", None),
@@ -274,10 +359,11 @@ schema_mapping = {EMAIL: map_email.strip(), DEPT: map_dept.strip(), POS: map_pos
 
 # ============================================================ UI =======
 st.title("🛡️ Power BI Security & Governance Command Center")
-st.caption("Local-only RLS engine · delta tracking · access audit. Nothing leaves this machine.")
+st.caption("Local-only RLS engine · delta tracking · access audit · query tool. Nothing leaves this machine.")
 
-tab_rls, tab_delta, tab_audit = st.tabs(
-    ["🔐 RLS Engine", "🔄 Delta Tracking", "📋 Access Audit & Gap Analysis"]
+tab_rls, tab_delta, tab_audit, tab_query = st.tabs(
+    ["🔐 RLS Engine", "🔄 Delta Tracking", "📋 Access Audit & Gap Analysis",
+     "🔍 Access Query Tool"]
 )
 
 
@@ -286,17 +372,20 @@ with tab_rls:
     st.header("Simulate & Combine → Final_RLS.csv")
     st.caption(
         "Upload the monthly HR Staff List (Excel), the Rule_Book.csv "
-        "(Department + Position → Store_Access & report access), and optional Exceptions.csv. "
-        f"Multiple stores in Store_Access use '{STORE_SEP}' and are exploded into one row per store."
+        "(Department as Store_Code + Position → Store_Access & report access), "
+        "optional Exceptions.csv, and the Store_Master for friendly store names. "
+        f"Multiple stores in Store_Access use '{STORE_SEP}' and are exploded into one row per store. "
+        "CSV files are read with encoding auto-detection (utf-8-sig → cp1252); "
+        "Excel uploads avoid encoding issues entirely."
     )
 
-    c1, c2, c3 = st.columns(3)
+    c1, c2 = st.columns(2)
     with c1:
         hr_up = st.file_uploader("HR Staff List (.xlsx)", type=["xlsx", "xls"], key="rls_hr")
+        rules_up = st.file_uploader("Rule_Book (.csv / .xlsx)", type=["csv", "xlsx", "xls"], key="rls_rules")
     with c2:
-        rules_up = st.file_uploader("Rule_Book.csv", type=["csv"], key="rls_rules")
-    with c3:
-        ex_up = st.file_uploader("Exceptions.csv (optional)", type=["csv"], key="rls_ex")
+        ex_up = st.file_uploader("Exceptions (.csv / .xlsx, optional)", type=["csv", "xlsx", "xls"], key="rls_ex")
+        sm_up = st.file_uploader("Store_Master (.csv / .xlsx, optional)", type=["csv", "xlsx", "xls"], key="rls_sm")
 
     with st.expander("📥 Download template files"):
         st.download_button(
@@ -311,19 +400,29 @@ with tab_rls:
             "Exceptions_template.csv",
             "text/csv",
         )
+        st.download_button(
+            "Store_Master template",
+            sample_store_master().to_csv(index=False).encode("utf-8-sig"),
+            "Store_Master_template.csv",
+            "text/csv",
+        )
 
     if st.button("▶️ Simulate & Combine", type="primary", key="rls_go"):
         if not hr_up or not rules_up:
-            st.error("Please upload both the HR Staff List and the Rule_Book.csv.")
+            st.error("Please upload both the HR Staff List and the Rule_Book.")
         else:
             try:
                 hr = read_hr_excel(hr_up, schema_mapping)
-                rules = read_csv_upload(rules_up)
-                ex = read_csv_upload(ex_up) if ex_up else None
-                final, warns = simulate_rls(hr, rules, ex)
+                rules = read_table_upload(rules_up)
+                ex = read_table_upload(ex_up) if ex_up else None
+                sm = read_table_upload(sm_up) if sm_up else None
+                new_pos, new_dept = check_unmapped_master_data(hr, rules)
+                warn_unmapped(new_pos, new_dept)
+                final, warns = simulate_rls(hr, rules, ex, sm)
                 st.session_state["final_rls"] = final
                 st.session_state["hr_current"] = hr
                 st.session_state["hr_current_name"] = hr_up.name
+                st.session_state["store_master_current"] = sm
                 for w in warns:
                     st.warning(w)
                 n_people = final[EMAIL].nunique()
@@ -340,7 +439,7 @@ with tab_rls:
         st.dataframe(final, use_container_width=True)
         st.download_button(
             "⬇️ Download Final_RLS.csv",
-            final.to_csv(index=False).encode(),
+            final.to_csv(index=False).encode("utf-8-sig"),
             "Final_RLS.csv",
             "text/csv",
         )
@@ -351,7 +450,8 @@ with tab_delta:
     st.header("Personnel Movement — Joiners / Leavers / Movers")
     st.caption(
         "Upload the previous HR list and the new HR list. "
-        "Leavers are flagged for access revocation; joiners get suggested access from the Rule_Book."
+        "Leavers are flagged for access revocation; joiners get suggested access from the Rule_Book. "
+        "New Positions/Departments missing from the Rule_Book trigger a bright warning."
     )
 
     d1, d2, d3 = st.columns(3)
@@ -360,7 +460,7 @@ with tab_delta:
     with d2:
         new_up = st.file_uploader("New HR List (.xlsx)", type=["xlsx", "xls"], key="delta_new")
     with d3:
-        delta_rules_up = st.file_uploader("Rule_Book.csv (for joiner suggestions)", type=["csv"], key="delta_rules")
+        delta_rules_up = st.file_uploader("Rule_Book (.csv / .xlsx)", type=["csv", "xlsx", "xls"], key="delta_rules")
 
     if st.button("🔍 Compare", type="primary", key="delta_go"):
         if not old_up or not new_up:
@@ -369,8 +469,11 @@ with tab_delta:
             try:
                 old = read_hr_excel(old_up, schema_mapping)
                 new = read_hr_excel(new_up, schema_mapping)
-                rules = read_csv_upload(delta_rules_up) if delta_rules_up else None
-                res = compute_deltas(old, new, rules)
+                rules = read_table_upload(delta_rules_up) if delta_rules_up else None
+                sm = st.session_state["store_master_current"]
+                if rules is not None:
+                    warn_unmapped(*check_unmapped_master_data(new, rules))
+                res = compute_deltas(old, new, rules, sm)
                 st.session_state["delta_res"] = res
                 st.session_state["hr_current"] = new
                 st.session_state["hr_current_name"] = new_up.name
@@ -393,7 +496,7 @@ with tab_delta:
         st.divider()
         if not joiners.empty:
             st.warning(f"👋 **{len(joiners)} Joiner(s)** — provision access:")
-            show = [c for c in [EMAIL, DEPT, POS, STORE_ACCESS, REPORT_ACCESS, "Source"]
+            show = [c for c in [EMAIL, DEPT, POS, STORE_ACCESS, STORE_NAME, REPORT_ACCESS, "Source"]
                     if c in joiners.columns]
             st.dataframe(joiners[show], use_container_width=True)
         else:
@@ -449,16 +552,17 @@ with tab_audit:
         with c1:
             st.download_button(
                 "⬇️ Download Access_Audit.csv",
-                audit.to_csv(index=False).encode(),
+                audit.to_csv(index=False).encode("utf-8-sig"),
                 "Access_Audit.csv",
                 "text/csv",
             )
         with c2:
-            audit_up = st.file_uploader("…or load an existing Access_Audit.csv", type=["csv"], key="audit_load")
+            audit_up = st.file_uploader("…or load an existing Access_Audit (.csv / .xlsx)",
+                                        type=["csv", "xlsx", "xls"], key="audit_load")
             if audit_up:
                 try:
-                    loaded = read_csv_upload(audit_up)
-                    _require_cols(loaded, ["Date", EMAIL, "Asset_Name", "Permission_Level"], "Access_Audit.csv")
+                    loaded = read_table_upload(audit_up)
+                    _require_cols(loaded, ["Date", EMAIL, "Asset_Name", "Permission_Level"], "Access_Audit")
                     if "Remark" not in loaded.columns:
                         loaded["Remark"] = ""
                     st.session_state["audit_log"] = loaded
@@ -475,7 +579,7 @@ with tab_audit:
     with g1:
         gap_hr_up = st.file_uploader("Current HR List (.xlsx)", type=["xlsx", "xls"], key="gap_hr")
     with g2:
-        gap_rules_up = st.file_uploader("Rule_Book.csv", type=["csv"], key="gap_rules")
+        gap_rules_up = st.file_uploader("Rule_Book (.csv / .xlsx)", type=["csv", "xlsx", "xls"], key="gap_rules")
 
     # Default to the HR list already in session (from RLS or Delta tabs).
     if st.button("Run Gap Analysis", type="primary", key="gap_go"):
@@ -484,10 +588,12 @@ with tab_audit:
             if hr is None:
                 st.error("Upload a current HR list (or run the RLS / Delta tab first).")
             elif not gap_rules_up:
-                st.error("Please upload the Rule_Book.csv.")
+                st.error("Please upload the Rule_Book.")
             else:
-                rules = read_csv_upload(gap_rules_up)
-                expected, warns = simulate_rls(hr, rules, None)
+                rules = read_table_upload(gap_rules_up)
+                sm = st.session_state["store_master_current"]
+                warn_unmapped(*check_unmapped_master_data(hr, rules))
+                expected, warns = simulate_rls(hr, rules, None, sm)
                 for w in warns:
                     st.warning(w)
                 missing, excess = gap_analysis(expected, st.session_state["audit_log"])
@@ -511,3 +617,85 @@ with tab_audit:
             st.dataframe(excess[[EMAIL, "Asset"]], use_container_width=True)
         else:
             st.success("No excess access found. ✅")
+
+
+# ----------------------------------------------------- TAB 4: QUERY ---
+with tab_query:
+    st.header("🔍 Access Query Tool — Effective Access Resolver")
+    st.caption(
+        "Search by user to see their stores (RLS logic) and reports (audit register), "
+        "or search by asset to list everyone who can reach it."
+    )
+
+    final_q = st.session_state.get("final_rls")
+    audit_q = st.session_state["audit_log"]
+    if final_q is None:
+        st.info("👆 Run **Simulate & Combine** in the RLS Engine tab first, then query here.")
+    else:
+        mode = st.radio("Search mode", ["By User (Email)", "By Asset (Store / Report)"],
+                        horizontal=True, key="query_mode")
+
+        if mode == "By User (Email)":
+            q = st.text_input("Work Email", key="query_user").strip().lower()
+            if q:
+                user_rows = final_q[final_q[EMAIL].str.strip().str.lower() == q]
+                if user_rows.empty:
+                    st.warning(f"No RLS rows found for '{q}'. Check the email spelling.")
+                else:
+                    person = user_rows.iloc[0]
+                    st.subheader(f"👤 {person[EMAIL]} — {person[DEPT]} / {person[POS]}")
+                    st.markdown("**🏬 Stores visible (RLS):**")
+                    st.dataframe(
+                        user_rows[[STORE_ACCESS, STORE_NAME, "Source"]].drop_duplicates(),
+                        use_container_width=True,
+                    )
+                    st.markdown("**📊 Reports granted (audit register):**")
+                    granted = audit_q[audit_q[EMAIL].str.strip().str.lower() == q] \
+                        if not audit_q.empty else audit_q
+                    if not granted.empty:
+                        st.dataframe(
+                            granted[["Date", "Asset_Name", "Permission_Level", "Remark"]],
+                            use_container_width=True,
+                        )
+                    else:
+                        st.info("No report grants logged for this user yet.")
+        else:
+            q = st.text_input("Store code / store name / report name", key="query_asset").strip()
+            if q:
+                ql = q.lower()
+                # --- store hits (RLS-derived) ---
+                store_hits = final_q[
+                    final_q[STORE_ACCESS].str.lower().str.contains(ql, na=False, regex=False)
+                    | final_q[STORE_NAME].str.lower().str.contains(ql, na=False, regex=False)
+                ]
+                if not store_hits.empty:
+                    st.subheader(f"🏬 Users with RLS access to store '{q}'")
+                    st.dataframe(
+                        store_hits[[EMAIL, DEPT, POS, STORE_ACCESS, STORE_NAME, "Source"]]
+                        .drop_duplicates().sort_values(EMAIL),
+                        use_container_width=True,
+                    )
+                # --- report hits: expected (rules) vs actual (audit) ---
+                exp_hits = final_q[
+                    final_q[REPORT_ACCESS].str.lower().str.contains(ql, na=False, regex=False)
+                ]
+                act_hits = audit_q[
+                    audit_q["Asset_Name"].str.lower().str.contains(ql, na=False, regex=False)
+                ] if not audit_q.empty else pd.DataFrame()
+                if not exp_hits.empty or not act_hits.empty:
+                    st.subheader(f"📊 Report access for '{q}'")
+                    if not exp_hits.empty:
+                        st.markdown("*Should have (per RLS rules):*")
+                        st.dataframe(
+                            exp_hits[[EMAIL, DEPT, POS]].drop_duplicates().sort_values(EMAIL),
+                            use_container_width=True,
+                        )
+                    if not act_hits.empty:
+                        st.markdown("*Actually granted (audit register):*")
+                        st.dataframe(
+                            act_hits[[EMAIL, "Permission_Level", "Date", "Remark"]]
+                            .drop_duplicates().sort_values(EMAIL),
+                            use_container_width=True,
+                        )
+                if store_hits.empty and exp_hits.empty and act_hits.empty:
+                    st.warning(f"Nothing found matching '{q}'.")

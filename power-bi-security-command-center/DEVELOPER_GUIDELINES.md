@@ -75,8 +75,14 @@ streamlit run app.py
 `Department`, `Position` (extra columns pass through untouched).
 
 **Rule_Book.csv** — columns: `Department`, `Position`, `Store_Access`,
-`Report_Access`. Multi-store values use `:` (e.g. `Store A:Store C`);
+`Report_Access`. `Department` and `Store_Access` now hold **Store_Codes**
+(e.g. `A`, `B`), not display names. Multi-store values use `:` (e.g. `A:C`);
 multi-report values use `;`. Use `Department = *` for position-wide wildcard rules.
+
+**Store_Master.csv** — columns: `Store_Code`, `Store_Name`. Joined after the
+`Store_Access` explosion so the UI and `Final_RLS.csv` show the friendly
+`Store_Name` alongside the code. Unknown codes fall back to the code itself.
+Isolates the app from store renames/closures — update the master, not the rules.
 
 **Exceptions.csv** — columns: `Work Email`, `Store_Access`, `Report_Access`,
 `Reason`. Empty cells mean "keep the rule value". Wins over Rule_Book per email.
@@ -94,6 +100,14 @@ inputs mapping raw HR columns → `Work Email` / `Department` / `Position`.
 `read_hr_excel(uploaded, mapping)` applies the rename before validation.
 Rule_Book, Exceptions, and Audit CSVs use the canonical names directly.
 
+## Modules (4 tabs)
+
+4. **Access Query Tool** (2026-10-14) — effective access resolver. *By User*
+   shows RLS-derived stores (code + name + source) and audit-logged reports
+   for one email; *By Asset* searches store codes/names against the RLS table
+   and report names against both expected (rules) and actual (audit) grants.
+   Requires `final_rls` in session state — prompts to run the RLS tab first.
+
 ## Conventions
 
 - **Parsers and logic stay pure.** No `st.*` calls above the `# UI` section —
@@ -109,8 +123,18 @@ Rule_Book, Exceptions, and Audit CSVs use the canonical names directly.
   explodes into one row per user per store for `Final_RLS.csv`. Rows with no
   store are kept as a single blank row (marked `NO RULE`) so they stay
   visible instead of vanishing silently. `Report_Access` still uses `;`.
-- **Never crash on bad input.** Validators raise `ValueError` with a human
-  message; the UI catches and shows it. Unknown files are skipped, not fatal.
+- **Robust file reading (2026-10-14, production fix):** a real file with `é`
+  (byte `0xe9`) crashed `pd.read_csv()` under utf-8. `read_csv_bytes()` now
+  tries `utf-8-sig` → `utf-8` → `cp1252` → `latin-1` and records the winner on
+  `df.attrs["source_encoding"]`. All tabular uploads (Rule_Book, Exceptions,
+  Store_Master, Audit) go through `read_table_upload()`, which also accepts
+  `.xlsx`/`.xls` to dodge CSV encoding entirely. Downloads are written with
+  `utf-8-sig` so Excel opens them cleanly.
+- **Unmapped master data (2026-10-14):** `check_unmapped_master_data()` diffs
+  HR's unique Positions/Departments against the Rule_Book; new values get a
+  bright `st.error` ("New Position/Department detected in HR List. Please
+  update the Rule Book to assign RLS logic."). Called in the RLS, Delta, and
+  Gap Analysis flows.
 
 ## Testing
 
