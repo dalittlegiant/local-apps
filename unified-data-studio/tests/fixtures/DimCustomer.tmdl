@@ -1,0 +1,30 @@
+table DimCustomer
+	lineageTag: aaa-111
+
+	/// Customer dimension, one row per customer.
+	column CustomerKey
+		dataType: int64
+		isKey: true
+		lineageTag: bbb-222
+
+	column CustomerName
+		dataType: string
+		lineageTag: ccc-333
+
+	/// Total sales across all channels.
+	measure 'Total Sales' = SUM ( FactSales[Amount] )
+		formatString: #,##0
+		lineageTag: ddd-444
+
+	measure 'Sales YTD' =
+		TOTALYTD (
+			[Total Sales],
+			DimDate[Date]
+		)
+		description: 'Year to date sales'
+		lineageTag: eee-555
+
+	partition 'Partition-1'
+		mode: import
+		source
+			expression: []

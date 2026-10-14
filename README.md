@@ -10,6 +10,7 @@ Shared developer conventions live in [DEVELOPER_GUIDE.md](DEVELOPER_GUIDE.md); e
 |-----|--------|-------------|
 | Power BI Metadata Extractor | `power-bi-metadata-extractor/` | Parse a Power BI `model.bim` and extract tables, columns, measures; export to Markdown. |
 | Power BI Security & Governance Command Center | `power-bi-security-command-center/` | Local RLS engine (store + position rules), delta tracking (joiners/leavers/movers), access audit register with gap analysis. |
+| Dav Data Studio (unified MPA) | `unified-data-studio/` | One launcher, three apps: PBIP Metadata & DAX Editor (TMDL line-surgery editing), platform-agnostic Security Command Center, Power BI Theme & UI Studio. Run with `streamlit run launcher.py`. |
 
 ## Running an app
 

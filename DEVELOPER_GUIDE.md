@@ -10,12 +10,34 @@ Shared conventions for every app in this repo. App-specific details
 local-apps/
 ├── DEVELOPER_GUIDE.md        # this file — shared conventions
 ├── README.md                 # app catalog (keep the table current)
-└── <app-slug>/
-    ├── app.py                # the entire app, single file
-    ├── requirements.txt      # minimal deps
-    └── DEVELOPER_GUIDELINES.md  # app-specific: purpose, data contracts,
-                                 # functions, methodology, tests
+├── <app-slug>/
+│   ├── app.py                # the entire app, single file
+│   ├── requirements.txt      # minimal deps
+│   └── DEVELOPER_GUIDELINES.md  # app-specific: purpose, data contracts,
+│                                # functions, methodology, tests
+└── <mpa-slug>/               # multi-page apps (the exception below)
+    ├── launcher.py           # entrypoint: set_page_config + st.navigation
+    ├── pages/                # one self-contained script per app
+    ├── lib/                 # pure logic, zero st.* imports (unit-testable)
+    ├── tests/                # run_tests.py + fixtures (no Streamlit needed)
+    ├── requirements.txt
+    └── DEVELOPER_GUIDELINES.md
 ```
+
+## Multi-page apps (MPA)
+
+A unified launcher is the exception to the single-file rule, used when
+several tools belong together (`unified-data-studio`). Conventions:
+
+1. `launcher.py` owns `set_page_config` and `st.navigation` — pages never
+   call `set_page_config`.
+2. Pure logic lives in `lib/` with **no `st.*` imports at all** (unlike
+   single-file apps, no UI-marker slicing is needed — import and test
+   directly).
+3. Session-state keys are prefixed per page — state is global across MPA
+   pages, so `tmdl_`, `sec_`, `thu_` style prefixes prevent collisions.
+4. `tests/run_tests.py` must pass before commit; verify page scripts with
+   Streamlit's `AppTest` headless runner when the UI changes.
 
 ## New-app checklist
 
@@ -31,7 +53,8 @@ local-apps/
 ```bash
 cd <app-folder>
 pip install -r requirements.txt
-streamlit run app.py
+streamlit run app.py            # single-file apps
+streamlit run launcher.py       # multi-page apps (unified-data-studio)
 ```
 
 ## App structure

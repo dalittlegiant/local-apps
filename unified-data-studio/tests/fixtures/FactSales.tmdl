@@ -1,0 +1,24 @@
+table FactSales
+    lineageTag: fff-666
+
+    column Amount
+        dataType: decimal
+        lineageTag: ggg-777
+
+    measure 'Avg Sale'
+        expression: AVERAGE ( FactSales[Amount] )
+        lineageTag: hhh-888
+
+    measure 'Running Total'
+        expression: |
+            CALCULATE (
+                [Total Sales],
+                FILTER (
+                    ALL ( DimDate ),
+                    DimDate[Date] <= MAX ( DimDate[Date] )
+                )
+            )
+        lineageTag: iii-999
+
+    measure 'No Desc Measure' = 1 + 1
+        lineageTag: jjj-000

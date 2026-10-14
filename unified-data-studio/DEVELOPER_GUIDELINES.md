@@ -1,0 +1,143 @@
+# Developer Guidelines — Dav Data Studio (unified-data-studio)
+
+> Shared repo conventions (testing, encoding, git/PAT, security) live in
+> [`../DEVELOPER_GUIDE.md`](../DEVELOPER_GUIDE.md). This file is only about
+> this app's structure, data contracts, and methodology.
+
+## Purpose
+
+One Streamlit multi-page app (`streamlit run launcher.py`) housing three
+local productivity & governance tools behind `st.navigation`:
+
+1. **📊 PBIP Metadata & DAX Editor** — parse TMDL tables from a PBIP folder,
+   edit DAX formulas and descriptions in the browser, save back to the
+   `.tmdl` files with lineageTag-safe line surgery.
+2. **🛡️ Security Command Center** — platform-agnostic governance: rule-book
+   access engine, joiner/leaver/mover delta tracking, audit register + gap
+   analysis, effective-access query tool. Logic ported from the standalone
+   `power-bi-security-command-center` v4 (same column contracts, so existing
+   Rule_Book / Exceptions / master files keep working).
+3. **🎨 Theme & UI Studio** — theme generator (controls → live dashboard
+   mockup → `theme.json` export) plus a bulk `visual.json` editor that
+   standardizes container formatting across a whole report.
+
+## Layout (MPA exception to the single-file rule)
+
+```
+unified-data-studio/
+├── launcher.py            # entrypoint: set_page_config + st.navigation only
+├── pages/
+│   ├── metadata_dax_editor.py
+│   ├── security_command_center.py
+│   └── theme_ui_studio.py
+├── lib/                   # pure logic, ZERO st.* imports (unit-testable)
+│   ├── tmdl_io.py         # TMDL parse + line-surgery edit/save
+│   ├── csv_loader.py      # encoding-robust CSV/Excel loading, HR mapping
+│   ├── rules_engine.py    # access engine, deltas, gap analysis
+│   └── theme_builder.py   # theme.json builder, preview HTML, visual.json bulk edit
+├── tests/
+│   ├── run_tests.py       # 60+ checks, no Streamlit needed
+│   └── fixtures/          # sample .tmdl files, visual.json
+├── requirements.txt       # streamlit>=1.36 (st.navigation), pandas, openpyxl
+└── README.md
+```
+
+Rules: `launcher.py` owns `set_page_config` (pages must not call it);
+session-state keys are prefixed per page (`tmdl_`, `sec_`, `thu_`) because
+state is global across MPA pages; `lib/` stays Streamlit-free.
+
+## App 1 — TMDL line-surgery methodology (`lib/tmdl_io.py`)
+
+**Never rewrite a file wholesale.** The parser records the exact line
+numbers and raw indentation of every editable property; `build_edit_ops`
+diffs working vs parsed objects into `LineOp`s (`replace`, `replace_range`,
+`delete_range`, `insert_before`); `apply_line_ops` applies them bottom-up so
+line numbers stay valid. Everything else — `lineageTag`, comments, blank
+lines, BOM, `\r\n` vs `\n`, trailing newline — is preserved byte-for-byte
+(tests assert lineageTag lines are identical after edits).
+
+- **Measure shapes handled:** inline (`measure 'X' = DAX…` + deeper
+  continuation lines), `expression:` single-line property, `expression: |`
+  block scalar. Single-line → multi-line DAX converts to block form.
+- **Description shapes:** `///` block (preferred when both exist),
+  `description:` property, absent → a new `///` block is inserted above the
+  declaration. Editing an empty description deletes the `///` block/property.
+- **DAX display normalization:** continuation lines are per-line stripped
+  when parsed (v2 behavior); the file keeps the exact text written on save.
+- **Quoting:** property rewrites preserve the original quoting style
+  (single-quote doubling for TMDL escapes); values needing quotes get them.
+- **Safety in the UI:** diff preview per file before save; save requires a
+  confirmation checkbox; in-place save only in folder mode; zip mode edits a
+  temp copy and downloads the result. `validate_dax` warns (never blocks) on
+  unbalanced brackets/quotes. "Discard" restores from the deep-copied parse.
+- **Scope:** TMDL only. Legacy `model.bim` stays in the standalone v2
+  extractor app.
+
+## App 2 — data contracts & functions
+
+Column contracts are identical to the standalone v4 app (see its
+`DEVELOPER_GUIDELINES.md` for the full table): `Work Email`, `Department`,
+`Position`, `Store_Access` (`:`-separated, exploded with `.split(':')` +
+`.explode()`), `Report_Access` (`;`-separated), `Store_Name` via the master.
+Framing is platform-agnostic ("assets", not "stores"); the engine itself is
+unchanged: exact `(Department, Position)` match → `*` wildcard → per-email
+exceptions win → explode → master join → `NO RULE` rows stay visible.
+`compute_deltas` (leavers/joiners/movers, anti-joins with `indicator=True`
+on `Work Email`), `gap_analysis` (expected vs audit pairs, both directions).
+`warn_unmapped` from v4 was de-streamlit-ified: the lib returns the lists,
+the page renders the red warning.
+
+## App 3 — theme schema notes (`lib/theme_builder.py`)
+
+- Theme JSON follows the documented format: top-level `name`,
+  `dataColors`, `background`, `foreground`, `tableAccent`, `textClasses`
+  (label/callout/title/header), and
+  `visualStyles.*.*.{background,border,dropShadow,padding,title}` with
+  `{ "solid": { "color": "#…" } }` color wrappers.
+- **Radius caveat:** `radius` inside `border` is used by real themes and
+  Microsoft's own reference, but one third-party source reports some
+  Desktop builds silently ignoring themes that carry it. The builder
+  includes it (rounded corners are a requirement); if a build ignores it,
+  delete the `radius` key from the exported JSON. The UI says this too.
+- **Bulk editor:** scans `visualContainerObjects` in each `visual.json`
+  (`background`, `border`, `padding`, `dropShadow`, `title`,
+  `visualHeader`), shows current values, applies a preset/custom standard
+  only to the chosen properties (deep copy; everything else preserved),
+  and zips the results. Presets live in `standard_presets()`.
+- Live preview is an HTML/CSS mockup (`render_preview_html`); every widget
+  change re-renders it. User-controlled text is HTML-escaped.
+
+## Testing
+
+```bash
+cd unified-data-studio
+python3 tests/run_tests.py        # 60+ lib checks, no Streamlit needed
+python3 -m py_compile launcher.py pages/*.py lib/*.py
+```
+
+Covered: TMDL parse shapes (tabs/spaces, `///` vs property, inline vs
+`expression:` vs block), every edit op type, lineageTag byte-preservation,
+BOM/CRLF round-trip, DAX validator, cp1252/utf-8-sig CSV fallback,
+`:` explosion, wildcard/exception/`NO RULE`/master-fallback, deltas, gap
+analysis both directions, theme build/validate, visual.json scan/apply
+idempotency. UI flows were additionally verified with Streamlit's `AppTest`
+headless runner (page boot, PBIP folder load, widget→stage→save→file on
+disk, theme control wiring) — re-run against a venv with streamlit
+installed if the pages change.
+
+## Gotchas for future edits
+
+- The DAX `text_area` key includes the selected measure's index
+  (`tmdl_dax_area_{i}`) — without this, switching measures shows stale DAX.
+- `st.data_editor` writes descriptions back into the working objects on
+  every rerun by row position; keep the editor DataFrame in parse order.
+- `build_edit_ops` takes the **original** object (it owns the line
+  locations) plus the new values — never the mutated working copy.
+- `use_container_width=True` is kept (not the newer `width="stretch"`) so
+  the app stays compatible with the `streamlit>=1.36` floor.
+
+## Future work
+
+- Relationships/hierarchies in the TMDL parser (currently skipped).
+- Audit log persistence (SQLite) instead of session state.
+- Bulk editor: per-visual-type `objects` (dataLabels, legend, …) standards.
