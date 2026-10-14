@@ -2,6 +2,8 @@
 
 A collection of small local web apps. Each lives in its own folder with its own `app.py` and `requirements.txt`.
 
+Shared developer conventions live in [DEVELOPER_GUIDE.md](DEVELOPER_GUIDE.md); each app's own `DEVELOPER_GUIDELINES.md` covers its schema and logic.
+
 ## Apps
 
 | App | Folder | Description |
