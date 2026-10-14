@@ -100,7 +100,14 @@ inputs mapping raw HR columns → `Work Email` / `Department` / `Position`.
 `read_hr_excel(uploaded, mapping)` applies the rename before validation.
 Rule_Book, Exceptions, and Audit CSVs use the canonical names directly.
 
-## Modules (4 tabs)
+## Modules (4 tabs, under the 🛠️ Workspace view)
+
+The app has two sidebar views (2026-10-14): **🛠️ Workspace** (all functional
+tabs) and **📖 How to Use** (a self-contained Markdown guide — what the app
+does, file requirements, methodology per module, monthly workflow, and
+troubleshooting — written so a new team member can self-onboard).
+`render_docs()` lives in the UI section and is pure `st.markdown`; the
+Workspace branch is skipped via `st.stop()` when docs are shown.
 
 4. **Access Query Tool** (2026-10-14) — effective access resolver. *By User*
    shows RLS-derived stores (code + name + source) and audit-logged reports

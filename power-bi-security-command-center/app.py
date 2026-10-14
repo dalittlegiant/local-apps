@@ -346,6 +346,14 @@ for key, default in [
 
 
 # ============================================================ sidebar ==
+st.sidebar.header("Navigate")
+page = st.sidebar.radio(
+    "Go to",
+    ["🛠️ Workspace", "📖 How to Use"],
+    key="nav_page",
+    label_visibility="collapsed",
+)
+
 st.sidebar.header("⚙️ Schema Mapping")
 st.sidebar.caption(
     "Map your raw HR Excel column names to the system's required columns. "
@@ -357,7 +365,153 @@ map_pos = st.sidebar.text_input("HR column → Position", value=POS)
 schema_mapping = {EMAIL: map_email.strip(), DEPT: map_dept.strip(), POS: map_pos.strip()}
 
 
+# ============================================================ docs ===
+def render_docs() -> None:
+    """The 'How to Use' page — a self-contained guide for new team members."""
+    st.title("📖 How to Use — Security & Governance Command Center")
+    st.caption("Read this page top to bottom and you'll know how to run the monthly governance cycle.")
+
+    st.header("1. What this app does")
+    st.markdown(
+        """
+This is a **local-only** governance tool for Power BI security. It answers three questions every month:
+
+- **Who should see what?** → the RLS Engine builds the row-level-security table from HR data + rules.
+- **What changed?** → Delta Tracking spots joiners, leavers, and movers between two HR lists.
+- **Are we compliant?** → the Audit Register logs manually granted access, and Gap Analysis flags what's missing or excessive.
+
+It has **four modules**, each with its own tab in the 🛠️ Workspace:
+
+| Module | One-line intro |
+|---|---|
+| 🔐 **RLS Engine** | Merges the HR list, Rule Book, and Exceptions into `Final_RLS.csv` — one row per user per store. |
+| 🔄 **Delta Tracking** | Compares the previous and new HR lists: leavers to deprovision, joiners to provision, movers to review. |
+| 📋 **Access Audit & Gap Analysis** | A register of manually granted cloud access, cross-checked against what the rules say people *should* have. |
+| 🔍 **Access Query Tool** | Search by user ("what can Alice see?") or by asset ("who can see Store B?"). |
+"""
+    )
+
+    st.header("2. Monthly workflow (the 5-minute version)")
+    st.markdown(
+        """
+1. **Delta Tracking tab** — upload last month's HR list and this month's HR list, click **Compare**.
+   Revoke cloud access for every **leaver** (red), provision **joiners** (amber), review **movers**.
+2. **RLS Engine tab** — upload this month's HR list + Rule_Book (+ Exceptions and Store_Master if you have them),
+   click **Simulate & Combine**, download `Final_RLS.csv`, hand it to whoever publishes the Power BI dataset.
+3. **Access Audit tab** — log any access you granted manually this month (email, asset, level, remark).
+4. **Gap Analysis** (same tab) — upload the HR list + Rule_Book, click **Run Gap Analysis**,
+   chase down every "Missing Required Access" row.
+"""
+    )
+
+    st.header("3. File requirements")
+    st.markdown(
+        """
+All tabular files accept **CSV or Excel (.xlsx)**. CSVs are read with automatic encoding detection
+(`utf-8-sig → utf-8 → cp1252`), so files with characters like `é` won't crash the app —
+but when in doubt, **Excel is the safest format**. Downloads are UTF-8 with BOM so Excel opens them cleanly.
+
+**HR Staff List** (`.xlsx` only)
+- Required columns: `Work Email`, `Department`, `Position`.
+- If HR renames their columns, don't edit the file — update the **⚙️ Schema Mapping** in the sidebar instead.
+- `Department` holds **store codes** (e.g. `A`), matching the Rule Book.
+
+**Rule_Book** (`.csv` / `.xlsx`) — the heart of the system
+- Columns: `Department`, `Position`, `Store_Access`, `Report_Access`.
+- `Department` is a **store code**, or `*` for a position-wide wildcard (e.g. every IT Officer).
+- `Store_Access`: one store code, or several separated by **`:`** (e.g. `A:C`).
+- `Report_Access`: report names separated by **`;`** (e.g. `Sales Dashboard;Inventory Report`).
+- Download the **template** from the RLS Engine tab to see the exact shape.
+
+**Exceptions** (`.csv` / `.xlsx`, optional) — per-person overrides that beat the Rule Book
+- Columns: `Work Email`, `Store_Access`, `Report_Access`, `Reason`.
+- Leave a cell empty to keep the rule's value for that field.
+
+**Store_Master** (`.csv` / `.xlsx`, optional but recommended)
+- Columns: `Store_Code`, `Store_Name`.
+- Lets the Rule Book speak in short codes while the UI and exports show friendly names.
+  When a store is renamed or closed, update this file — not the rules.
+
+**Access_Audit** (`.csv` / `.xlsx`)
+- Columns: `Date`, `Work Email`, `Asset_Name`, `Permission_Level`, `Remark`.
+- This is your local stand-in for the Power BI API you don't have: every manually granted
+  cloud access gets logged here with a justification in `Remark`.
+"""
+    )
+
+    st.header("4. Methodology — how each module works")
+
+    st.subheader("🔐 RLS Engine")
+    st.markdown(
+        """
+1. **Match** — each HR row is looked up in the Rule Book on (`Department`, `Position`).
+   An exact match wins; otherwise a `Department = *` wildcard row for that position is used.
+2. **Override** — if the person's email appears in Exceptions, those values replace the rule's
+   (empty cells keep the rule value). The `Source` column records `Rule_Book`, `Exception`, or `NO RULE`.
+3. **Explode** — `Store_Access` is split on `:` and exploded, so `A:C` becomes **two rows**.
+   Power BI needs one row per user per store, not the word "All".
+4. **Resolve names** — store codes are joined to the Store Master to add the friendly `Store_Name`.
+5. **Warn** — anyone with no matching rule is kept as a visible `NO RULE` row (never silently dropped),
+   and any `Department`/`Position` in HR but missing from the Rule Book triggers a red
+   *"New Position/Department detected — please update the Rule Book"* warning.
+"""
+    )
+
+    st.subheader("🔄 Delta Tracking")
+    st.markdown(
+        """
+- **Leavers** — emails in the old list but missing from the new list (anti-join). Shown in **red**:
+      revoke their cloud access immediately.
+- **Joiners** — emails only in the new list. The app suggests their stores and reports by running
+      them through the RLS Engine, so provisioning is one glance.
+- **Movers** — same email, but `Department` or `Position` changed. Review whether their access
+      still fits their new role.
+- All comparisons are on the `Work Email` column exactly — no hidden keys, no fuzzy matching.
+"""
+    )
+
+    st.subheader("📋 Access Audit & Gap Analysis")
+    st.markdown(
+        """
+- **Audit Register** — append-only log of real grants. The in-app form writes to it; you can also
+      load an existing CSV. **Download it before closing the browser** — it lives in memory.
+- **Gap Analysis** — builds the *expected* access by expanding every user's `Report_Access`
+      into (email, report) pairs, then anti-joins against the *actual* grants in the audit log:
+    - **Missing Required Access** (red) — the rules say they should have it, but it's not logged. Grant it.
+    - **Excess / Unknown Access** (amber) — logged but not required by any rule. Review or revoke it.
+"""
+    )
+
+    st.subheader("🔍 Access Query Tool")
+    st.markdown(
+        """
+Needs the RLS Engine to have run at least once (it queries the latest `Final_RLS` in memory).
+- **By User** — type an email: see every store they can reach (code + friendly name + whether it
+      came from a rule or an exception) and every report grant in the audit register with its remark.
+- **By Asset** — type a store code/name or report name: for stores, lists everyone with RLS access;
+      for reports, shows *should have* (per rules) next to *actually granted* (per audit) so you can
+      spot the difference instantly.
+"""
+    )
+
+    st.header("5. Tips & troubleshooting")
+    st.markdown(
+        """
+- **Weird characters crash?** Save the file as `.xlsx` and re-upload — Excel sidesteps CSV encoding entirely.
+- **HR renamed their columns?** Update the three ⚙️ Schema Mapping fields in the sidebar; don't touch the code.
+- **"NO RULE" rows?** Add the missing (`Department`, `Position`) combination to the Rule Book,
+      or add a `*` wildcard row for that position.
+- **Store renamed or closed?** Update `Store_Master` — the Rule Book and history stay untouched.
+- **Lost the audit log?** It only persists if you download `Access_Audit.csv`. Make that part of the monthly routine.
+"""
+    )
+
+
 # ============================================================ UI =======
+if page == "📖 How to Use":
+    render_docs()
+    st.stop()
+
 st.title("🛡️ Power BI Security & Governance Command Center")
 st.caption("Local-only RLS engine · delta tracking · access audit · query tool. Nothing leaves this machine.")
 
