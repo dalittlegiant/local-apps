@@ -5,15 +5,18 @@
 A local-only Streamlit governance tool for Kong's Power BI duties. Three modules:
 
 1. **RLS Engine** — merges monthly HR Staff List (Excel) + Rule_Book.csv +
-   Overrides.csv into a clean `Final_RLS.csv`, with rule matching on
-   **both** `Base_Store` and `Position`.
+   Exceptions.csv into a clean `Final_RLS.csv`, with rule matching on
+   **both** `Department` and `Position`. `Store_Access` values delimited by
+   `:` are **exploded** into one row per user per store.
 2. **Delta Tracking** — compares previous vs new HR lists to find **Leavers**
    (revoke access), **Joiners** (suggest access from rules), and **Movers**
-   (position/store changed).
+   (department/position changed).
 3. **Access Audit & Gap Analysis** — a local data-entry form maintains
-   `Access_Audit.csv` (Date, Email, Asset_Name, Permission_Level); Gap Analysis
-   cross-checks expected access (HR + rules) vs actual grants and flags
-   **Missing Required Access** and **Excess / Unknown Access**.
+   `Access_Audit.csv` (Date, Work Email, Asset_Name, Permission_Level, Remark);
+   Gap Analysis cross-checks expected access (HR + rules) vs actual grants and
+   flags **Missing Required Access** and **Excess / Unknown Access**,
+   comparing strictly on the `Work Email` column (no hidden temp keys —
+   see the 2026-10-14 `_email_key` bug fix).
 
 No Power BI API is used or needed — everything is local CSV/Excel + Pandas.
 
@@ -68,29 +71,46 @@ streamlit run app.py
 
 ## Data contracts
 
-**HR Staff List (.xlsx)** — columns: `Email`, `Base_Store`, `Position`
-(extra columns pass through untouched).
+**HR Staff List (.xlsx)** — columns mapped via the sidebar to: `Work Email`,
+`Department`, `Position` (extra columns pass through untouched).
 
-**Rule_Book.csv** — columns: `Base_Store`, `Position`, `RLS_Stock_Room_Codes`,
-`Report_Access`. Multi-value fields use `;` as separator.
-Use `Base_Store = *` for position-wide wildcard rules.
+**Rule_Book.csv** — columns: `Department`, `Position`, `Store_Access`,
+`Report_Access`. Multi-store values use `:` (e.g. `Store A:Store C`);
+multi-report values use `;`. Use `Department = *` for position-wide wildcard rules.
 
-**Overrides.csv** — columns: `Email`, `RLS_Stock_Room_Codes`, `Report_Access`,
-`Reason`. Empty cells mean "keep the rule value".
+**Exceptions.csv** — columns: `Work Email`, `Store_Access`, `Report_Access`,
+`Reason`. Empty cells mean "keep the rule value". Wins over Rule_Book per email.
 
-**Access_Audit.csv** — columns: `Date`, `Email`, `Asset_Name`, `Permission_Level`.
+**Access_Audit.csv** — columns: `Date`, `Work Email`, `Asset_Name`, `Permission_Level`, `Remark`.
+
+## Schema & column mapping
+
+Canonical columns used everywhere: `Work Email`, `Department`, `Position`,
+`Store_Access`, `Report_Access`, plus `Source` in RLS output.
+
+**Dynamic schema mapping (2026-10-14):** HR Excel files rarely keep stable
+column names, so the sidebar has a "Schema Mapping" section with three text
+inputs mapping raw HR columns → `Work Email` / `Department` / `Position`.
+`read_hr_excel(uploaded, mapping)` applies the rename before validation.
+Rule_Book, Exceptions, and Audit CSVs use the canonical names directly.
 
 ## Conventions
 
 - **Parsers and logic stay pure.** No `st.*` calls above the `# UI` section —
   this keeps them testable without Streamlit (see testing below).
-- **Joins are always on `_email_key`** (normalized), never on raw `Email`.
+- **All joins compare strictly on the `Work Email` column.** A 2026-10-14 bug
+  crashed Gap Analysis with `'_email_key'` because a hidden temp key leaked
+  between functions. The fix: no temp join keys anywhere — build
+  `(Work Email, Asset)` pair dataframes and anti-join on those real columns.
 - **Anti-joins use `indicator=True`.** This is the standard pattern for
   leavers/joiners/missing/excess — do not reimplement with `isin()` loops.
+- **1-to-many explosion:** `Store_Access` uses `:` as the multi-store
+  delimiter (e.g. `Store A:Store B`). `explode_store_access()` splits and
+  explodes into one row per user per store for `Final_RLS.csv`. Rows with no
+  store are kept as a single blank row (marked `NO RULE`) so they stay
+  visible instead of vanishing silently. `Report_Access` still uses `;`.
 - **Never crash on bad input.** Validators raise `ValueError` with a human
   message; the UI catches and shows it. Unknown files are skipped, not fatal.
-- **`;` is the multi-value separator** in `RLS_Stock_Room_Codes` and
-  `Report_Access`. Keep it consistent everywhere (templates, parsing, export).
 
 ## Testing
 
