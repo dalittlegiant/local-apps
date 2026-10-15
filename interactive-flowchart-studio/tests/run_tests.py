@@ -102,4 +102,62 @@ for key, tpl in core.starter_templates().items():
     d = core.render_viewer_html(tpl["name"], tpl["nodes"], tpl["edges"])
     check(f"template {key} renders", "<svg" in d and tpl["name"] in d)
 
+# --- layout direction + gaps -------------------------------------------------
+pos_tb, sw_tb, sh_tb = core.layout(nodes, edges, direction="TB")
+check("TB layers top-to-bottom",
+      pos_tb["a"][1] < pos_tb["b"][1] < pos_tb["c"][1] < pos_tb["d"][1])
+check("TB row spacing",
+      pos_tb["d"][1] - pos_tb["c"][1] == core.NODE_H + core.GAP_Y)
+same_row_nodes = [
+    {"id": "s", "label": "S", "type": "action", "desc": ""},
+    {"id": "x", "label": "X", "type": "action", "desc": ""},
+    {"id": "y", "label": "Y", "type": "action", "desc": ""},
+]
+same_row_edges = [{"source": "s", "target": "x", "label": ""},
+                  {"source": "s", "target": "y", "label": ""}]
+pos_sr, _, _ = core.layout(same_row_nodes, same_row_edges, direction="TB")
+check("TB same-depth side by side",
+      pos_sr["x"][1] == pos_sr["y"][1]
+      and pos_sr["y"][0] - pos_sr["x"][0] == core.NODE_W + core.GAP_X)
+pos_gx, _, _ = core.layout(nodes, edges, gap_x=200)
+check("custom horizontal gap",
+      pos_gx["b"][0] - pos_gx["a"][0] == core.NODE_W + 200)
+pos_gy, _, _ = core.layout(same_row_nodes, same_row_edges, gap_y=99)
+check("custom vertical gap",
+      pos_gy["y"][1] - pos_gy["x"][1] == core.NODE_H + 99)
+check("bad direction falls back to LR",
+      core.layout(nodes, edges, direction="XX")[0]["a"][0]
+      == core.layout(nodes, edges)[0]["a"][0])
+
+# --- viewer: dashed edges, drag, info panel ----------------------------------
+doc = core.render_viewer_html("My Flow", nodes, edges)
+check("edges dashed by default", "stroke-dasharray:6 4" in doc)
+check("lit edge style", ".edge.lit path" in doc and "stroke-dasharray:none" in doc)
+check("drag handlers", "mousedown" in doc and "redrawEdge" in doc)
+check("reset positions button", 'id="resetPosBtn"' in doc)
+check("node position data attrs", 'data-x="' in doc)
+check("default info panel",
+      core.DEFAULT_INFO_HEADING in doc and core.DEFAULT_INFO_TEXT in doc)
+doc_tb = core.render_viewer_html("T", nodes, edges, direction="TB")
+check("TB viewer direction", 'const DIR="TB"' in doc_tb)
+doc_info = core.render_viewer_html("T", nodes, edges,
+                                   info_heading="My Guide",
+                                   info_text="Follow the money.")
+check("custom info panel", "My Guide" in doc_info and "Follow the money." in doc_info)
+check("no external deps",
+      "http" not in doc.replace("http://www.w3.org", ""))
+svg_tb = core.to_svg(nodes, edges, "T", direction="TB")
+check("svg TB renders", svg_tb.startswith("<svg") and "</svg>" in svg_tb)
+
+# --- sharepoint wrapper ---------------------------------------------------------
+frag = core.wrap_sharepoint_html("<div class='ai-widget'>hi</div>", "My Widget")
+check("fragment wrapped", frag.startswith("<!DOCTYPE html>")
+      and "My Widget" in frag and "overflow-x:hidden" in frag)
+check("wrapper responsive", "max-width:100%" in frag)
+full = "<!DOCTYPE html><html><head></head><body>x</body></html>"
+check("full doc untouched", core.wrap_sharepoint_html(full) == full)
+check("wrapper title escaped",
+      "&lt;b&gt;" in core.wrap_sharepoint_html("<p>x</p>", "<b>evil</b>"))
+check("wrapper empty safe", "<!DOCTYPE html>" in core.wrap_sharepoint_html(""))
+
 print(f"\nAll {passed} checks passed.")

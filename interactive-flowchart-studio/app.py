@@ -3,9 +3,11 @@
 1. Node & edge table editor (st.data_editor + quick-add) with 2 starter
    templates.
 2. Live interactive preview — click nodes to trace the path and read step
-   details (client-side JS, no round-trip).
+   details, drag nodes to rearrange (client-side JS, no round-trip).
 3. Standalone interactive HTML export (double-clickable, zero deps),
    plus Mermaid and SVG export for PowerPoint.
+4. Custom AI HTML Studio — wrap AI-generated HTML snippets in a
+   SharePoint-iframe-friendly shell, preview live, download.
 
 Pure logic lives in flow_core.py. Runs standalone
 (`streamlit run app.py`) or inside the suite launcher.
@@ -60,6 +62,39 @@ def _as_records(df: pd.DataFrame, cols: list[str]) -> list[dict]:
             for _, row in df.iterrows()]
 
 
+def _load_template(key: str):
+    """on_click callback for the starter-template buttons.
+
+    Callbacks run BEFORE the script body, so assigning widget-bound keys
+    (fc8_title) here is legal — doing it inline after the text_input was
+    rendered raised StreamlitWidgetAlreadyInstantiatedError and aborted
+    the run (the second button never rendered). The data_editor widget
+    states are dropped so the editors re-initialize from the new frames.
+    """
+    tpl = core.starter_templates()[key]
+    st.session_state[P + "nodes"] = pd.DataFrame(tpl["nodes"])
+    st.session_state[P + "edges"] = pd.DataFrame(tpl["edges"])
+    st.session_state[P + "title"] = tpl["name"]
+    for k in (P + "nodes_ed", P + "edges_ed"):
+        st.session_state.pop(k, None)
+
+
+def _viewer_opts() -> dict:
+    """Style/layout/info-panel options shared by preview and export."""
+    direction = ("TB" if st.session_state.get(P + "dir",
+                                              "Left-to-Right") == "Top-to-Bottom"
+                 else "LR")
+    return {
+        "direction": direction,
+        "gap_x": int(st.session_state.get(P + "gapx", core.GAP_X)),
+        "gap_y": int(st.session_state.get(P + "gapy", core.GAP_Y)),
+        "info_heading": st.session_state.get(P + "info_h",
+                                             core.DEFAULT_INFO_HEADING),
+        "info_text": st.session_state.get(P + "info_c",
+                                          core.DEFAULT_INFO_TEXT),
+    }
+
+
 st.title("🔀 Interactive Flowchart Studio")
 st.caption("Build decision trees, SOPs, and business-logic flows — preview "
            "them live, then export a standalone interactive HTML file anyone "
@@ -67,8 +102,9 @@ st.caption("Build decision trees, SOPs, and business-logic flows — preview "
 
 st.text_input("Flowchart title", value="My Flowchart", key=P + "title")
 
-tab_edit, tab_preview, tab_export = st.tabs(
-    ["📝 Node & Edge Editor", "👁️ Live Preview", "📦 Export"])
+tab_edit, tab_preview, tab_export, tab_ai = st.tabs(
+    ["📝 Node & Edge Editor", "👁️ Live Preview", "📦 Export",
+     "🎨 AI HTML Studio"])
 
 # ========================================================== TAB 1 ===
 with tab_edit:
@@ -78,12 +114,9 @@ with tab_edit:
         for col, key in zip((t1, t2), ("report_access", "kpi_troubleshooting")):
             with col:
                 tpl = core.starter_templates()[key]
-                if st.button(f"📥 Load: {tpl['name']}", key=P + f"tpl_{key}",
-                             use_container_width=True):
-                    st.session_state[P + "nodes"] = pd.DataFrame(tpl["nodes"])
-                    st.session_state[P + "edges"] = pd.DataFrame(tpl["edges"])
-                    st.session_state[P + "title"] = tpl["name"]
-                    st.rerun()
+                st.button(f"📥 Load: {tpl['name']}", key=P + f"tpl_{key}",
+                          use_container_width=True,
+                          on_click=_load_template, args=(key,))
 
     st.subheader("Nodes")
     with st.container(border=True):
@@ -153,8 +186,25 @@ with tab_edit:
 with tab_preview:
     st.subheader("Interactive preview")
     with st.container(border=True):
+        st.subheader("🎛️ Viewer style & layout")
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            st.radio("Layout direction", ("Left-to-Right", "Top-to-Bottom"),
+                     horizontal=True, key=P + "dir")
+        with c2:
+            st.slider("Horizontal gap (px)", 40, 260, core.GAP_X, key=P + "gapx")
+        with c3:
+            st.slider("Vertical gap (px)", 16, 140, core.GAP_Y, key=P + "gapy")
+        st.text_input("Default info panel heading",
+                      value=core.DEFAULT_INFO_HEADING, key=P + "info_h")
+        st.text_area("Default info panel content",
+                     value=core.DEFAULT_INFO_TEXT, key=P + "info_c", height=80,
+                     help="Shown in the side panel until a node is clicked, "
+                          "and again whenever the selection is cleared.")
+    with st.container(border=True):
         st.caption("Click any node to highlight its path from the start and read "
-                   "its detailed description. Click the background to reset.")
+                   "its detailed description. Drag nodes to rearrange them. "
+                   "Click the background to reset.")
         nodes = _as_records(st.session_state[P + "nodes"], NODE_COLS)
         edges = [e for e in _as_records(st.session_state[P + "edges"], EDGE_COLS)
                  if e["source"] and e["target"]]
@@ -169,9 +219,11 @@ with tab_preview:
                         "3. The live interactive diagram appears here.")
         else:
             title = st.session_state.get(P + "title", "Flowchart")
-            html_doc = core.render_viewer_html(title, nodes, edges)
-            _, sw, sh = core.layout(nodes, edges)
-            components.html(html_doc, height=min(720, sh + 220), scrolling=True)
+            opts = _viewer_opts()
+            html_doc = core.render_viewer_html(title, nodes, edges, **opts)
+            _, sw, sh = core.layout(nodes, edges, opts["direction"],
+                                    opts["gap_x"], opts["gap_y"])
+            components.html(html_doc, height=min(760, sh + 260), scrolling=True)
 
 # ========================================================== TAB 3 ===
 with tab_export:
@@ -195,21 +247,108 @@ with tab_export:
             title = st.session_state.get(P + "title", "Flowchart")
             stem = "".join(c if c.isalnum() else "_" for c in title).strip("_") \
                 or "flowchart"
+            opts = _viewer_opts()
             c1, c2, c3 = st.columns(3)
             with c1:
                 st.download_button(
                     "🌐 Interactive HTML", core.render_viewer_html(
-                        title, nodes, edges),
+                        title, nodes, edges, **opts),
                     f"{stem}.html", "text/html", key=P + "dl_html",
-                    help="Self-contained — double-click in Chrome/Edge, no Python needed.")
+                    help="Self-contained — double-click in Chrome/Edge, no Python needed. "
+                         "Carries your layout, spacing and info-panel defaults.")
             with c2:
                 st.download_button("🧜 Mermaid (.mmd)",
                                    core.to_mermaid(nodes, edges),
                                    f"{stem}.mmd", "text/plain", key=P + "dl_mmd")
             with c3:
                 st.download_button("🖼️ SVG (for PowerPoint)",
-                                   core.to_svg(nodes, edges, title),
+                                   core.to_svg(nodes, edges, title,
+                                               opts["direction"], opts["gap_x"],
+                                               opts["gap_y"]),
                                    f"{stem}.svg", "image/svg+xml",
                                    key=P + "dl_svg")
             st.caption("PowerPoint: Insert → Pictures → this SVG (ungroup to edit "
                        "shapes), or paste the Mermaid code into a Mermaid renderer.")
+
+# ========================================================== TAB 4 ===
+AI_PROMPT = """You are a front-end developer. Generate a single, self-contained HTML5 snippet (a FRAGMENT — do NOT include <html>, <head> or <body> tags) with inline CSS and vanilla JavaScript only.
+
+Hard requirements:
+- No external libraries, fonts, images, or network calls — everything inline.
+- Responsive: fluid widths (max-width: 100%), no fixed pixel widths above 900px, no horizontal scrollbars.
+- Clean system font stack: 'Segoe UI', -apple-system, 'Helvetica Neue', Arial, sans-serif.
+- Wrap the whole snippet in one container: <div class="ai-widget">…</div>.
+- All JavaScript at the end of the snippet inside ONE <script> tag; guard every DOM lookup with null checks so there are no console errors.
+- Accessible: color contrast 4.5:1+, readable font sizes (14px+), visible focus states.
+
+Now build the following. Keep it polished but compact:
+
+<DESCRIBE WHAT YOU WANT HERE>
+"""
+
+with tab_ai:
+    st.subheader("🎨 Custom AI HTML Studio — SharePoint Embed Wrapper")
+    st.caption("Paste any AI-generated HTML/CSS/JS snippet, preview it live, "
+               "and export a standalone `.html` file ready to upload into a "
+               "SharePoint Embed web part (iframe).")
+
+    with st.container(border=True):
+        st.subheader("① Paste or upload HTML")
+        up = st.file_uploader("Upload an .html file (optional)",
+                              type=["html", "htm"], key=P + "ai_up")
+        if up is not None and st.session_state.get(P + "ai_up_name") != up.name:
+            # Seed the editor from the upload (before the text_area below is
+            # instantiated, so assigning its key is legal).
+            st.session_state[P + "ai_up_name"] = up.name
+            try:
+                st.session_state[P + "ai_code"] = up.getvalue().decode(
+                    "utf-8", errors="replace")
+            except Exception:
+                st.session_state[P + "ai_code"] = ""
+        code = st.text_area("HTML / CSS / JS snippet", height=320,
+                            key=P + "ai_code",
+                            placeholder="Paste your AI-generated snippet here…",
+                            help="A fragment (no <html> needed) or a complete "
+                                 "HTML document — both work.")
+
+    with st.container(border=True):
+        st.subheader("② Wrap & preview")
+        c1, c2 = st.columns([3, 2])
+        with c1:
+            auto_wrap = st.checkbox(
+                "Smart auto-wrap partial snippets",
+                value=True, key=P + "ai_wrap",
+                help="Fragments are wrapped in a clean UTF-8, responsive "
+                     "HTML5 shell (no horizontal scrollbars, system fonts) "
+                     "optimized for SharePoint iframes. Complete documents "
+                     "are kept as-is.")
+        with c2:
+            wrap_title = st.text_input("Wrapper title", value="Embedded content",
+                                       key=P + "ai_title")
+        wrapped = (core.wrap_sharepoint_html(code, wrap_title)
+                   if auto_wrap else (code or ""))
+        is_full = bool(code) and code != wrapped
+        if is_full:
+            st.caption("ℹ️ Complete HTML document detected — kept as-is.")
+        preview_h = st.slider("Preview height (px)", 300, 1200, 600,
+                              key=P + "ai_h")
+        if wrapped.strip():
+            components.html(wrapped, height=preview_h, scrolling=True)
+        else:
+            st.info("Paste a snippet above to see the live preview here.")
+
+    with st.container(border=True):
+        st.subheader("③ Export")
+        stem = "".join(c if c.isalnum() else "_" for c in wrap_title
+                       ).strip("_") or "sharepoint_embed"
+        st.download_button("⬇️ Download .html for SharePoint",
+                           wrapped or "<!-- empty -->",
+                           f"{stem}.html", "text/html", key=P + "ai_dl",
+                           help="Upload this file to SharePoint, then point an "
+                                "Embed web part at it (or paste via iframe).")
+
+    with st.expander("🤖 AI prompt helper — copy & paste to any AI"):
+        st.caption("Give this prompt to ChatGPT / Claude / Copilot so the "
+                   "generated code is ready to paste into ① above.")
+        st.code(AI_PROMPT, language="text")
+
