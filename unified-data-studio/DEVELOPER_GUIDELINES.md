@@ -160,7 +160,7 @@ Session prefixes: `ppt4_`, `dd5_`, `san6_`, `pdf7_`.
 | 4 | PPT Playbook Builder | `../auto-ppt-playbook-builder/` | `ppt_core.py` — Pillow annotation, 16:9 slide building, dictionary pagination, image-preserving slide clone + `{{tag}}` mail-merge |
 | 5 | SQL Sandbox & Diff Engine | `../data-diff-duckdb-sandbox/` | `diff_core.py` — parquet/csv/xlsx loading, profiler, DuckDB runner, key-based diff (added/deleted/schema/cell-level) |
 | 6 | Messy Excel Sanitizer | `../messy-excel-sanitizer/` | `sanitize_core.py` — merged-cell handling, sanitization pipeline, schema validation, concatenation |
-| 7 | Comms & PDF Toolkit | `../office-comms-pdf-toolkit/` | `toolkit_core.py` — 5 comms templates, pypdf/pdfplumber/reportlab ops, Pillow beautifier |
+| 7 | Comms & PDF Toolkit | `../office-comms-pdf-toolkit/` | `toolkit_core.py` — 5 comms templates, pypdf/reportlab ops (pure-Python, Stlite-safe), Pillow beautifier |
 | 8 | Flowchart Studio | `../interactive-flowchart-studio/` | `flow_core.py` — validation, layered layout, standalone interactive HTML viewer, Mermaid/SVG export |
 | 9 | Meeting Hub | `../bi-requirement-meeting-hub/` | `meeting_core.py` — SQLite CRUD, triage filters, grouped minutes generator |
 | 10 | Prompt & Privacy Hub | `../ai-prompt-privacy-hub/` | `prompt_core.py` — framework prompts, custom templates, reversible masker, repo packer |

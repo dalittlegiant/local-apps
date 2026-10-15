@@ -67,6 +67,8 @@ with st.container(border=True):
                 st.markdown(f"- `{r}`")
         else:
             st.markdown("_None detected — stdlib only._")
+        st.caption("At build time, WASM-unsafe packages are auto-swapped "
+                   "(`pypdfium2` → `pypdf`) or dropped (`pdfplumber`).")
     extra = st.text_input(
         "Extra packages (comma-separated, optional)",
         placeholder="matplotlib, scikit-learn",
@@ -81,6 +83,7 @@ with st.container(border=True):
     if st.button("⚙️ Build sandbox HTML", type="primary", key=P + "build"):
         reqs = detected_reqs + [e.strip() for e in extra.split(",") if e.strip()]
         reqs = list(dict.fromkeys(reqs))
+        reqs = core.apply_wasm_substitutions(reqs)
         try:
             html = core.build_html(title.strip() or app["dir"], files, reqs)
         except Exception as e:

@@ -16,8 +16,7 @@ STLITE_CSS = (f"https://cdn.jsdelivr.net/npm/@stlite/mountable@"
               f"{STLITE_VERSION}/build/stlite.css")
 ENTRY_NAME = "streamlit_app.py"
 
-DISCLAIMER = (
-    "📵 **Browser-sandbox limits — read before exporting.**\n\n"
+DISCLAIMER = (    "📵 **Browser-sandbox limits — read before exporting.**\n\n"
     "1. **“Read from Local Path” will NOT work** in the generated HTML. "
     "Browsers cannot see your PC/iPhone filesystem, so always switch the "
     "app to its **“Upload File”** toggle when running on mobile.\n"
@@ -72,6 +71,28 @@ def read_requirements(app_path) -> list:
             continue
         names.append(name)
     return list(dict.fromkeys(names))
+
+
+# Packages that can never install under Pyodide (no WASM wheel) and their
+# pure-Python replacements. Applied to the generated HTML requirements so
+# an export keeps working even if a desktop requirements.txt lists them.
+WASM_REQ_SUBSTITUTIONS = {
+    "pypdfium2": "pypdf",   # pdfplumber's C-extension backend
+    "pdfplumber": None,     # dropped — table extraction uses pypdf now
+}
+
+
+def apply_wasm_substitutions(requirements: list) -> list:
+    """Rewrite a requirements list for Pyodide: swap WASM-unsafe packages
+    for pure-Python equivalents, drop those with no replacement."""
+    out: list = []
+    for r in requirements:
+        sub = WASM_REQ_SUBSTITUTIONS.get(r.strip().lower(), r)
+        if sub is None:
+            continue
+        if sub not in out:
+            out.append(sub)
+    return out
 
 
 def bundle_files(app: dict) -> dict:

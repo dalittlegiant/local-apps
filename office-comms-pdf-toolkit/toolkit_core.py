@@ -1,7 +1,8 @@
 """Core logic for the Office Comms & PDF Toolkit. Pure — no ``st.*`` calls.
 
 Covers: corporate comms templates, PDF merge/split/watermark/table
-extraction (pypdf + pdfplumber + reportlab), and the screenshot beautifier
+extraction (pypdf + reportlab — pure Python, Stlite/Pyodide-safe), and
+the screenshot beautifier
 (Pillow: trim, padding, rounded corners, drop shadow).
 """
 
@@ -323,18 +324,39 @@ def _dedupe_cols(cols: list[str]) -> list[str]:
 
 
 def extract_tables(data: bytes) -> list[tuple[int, int, "pd.DataFrame"]]:
-    """[(page_1based, table_idx, df)] — first row becomes the header."""
-    import pdfplumber
+    """[(page_1based, table_idx, df)] — first row becomes the header.
+
+    Pure-Python implementation on top of pypdf's ``layout`` text
+    extraction: each run of 2+ spaces starts a new column, and blank
+    lines separate tables. Single-column blocks are treated as prose
+    and skipped. Deliberately pdfplumber-free — pdfplumber requires
+    pypdfium2 (a C extension with no Pyodide/WASM wheel), which breaks
+    Stlite HTML exports.
+    """
+    from pypdf import PdfReader
     out = []
-    with pdfplumber.open(io.BytesIO(data)) as pdf:
-        for pi, page in enumerate(pdf.pages, start=1):
-            for ti, table in enumerate(page.extract_tables() or [], start=1):
-                if not table or not any(any(cell for cell in row) for row in table):
-                    continue
-                header = _dedupe_cols(
-                    [str(c).strip() if c else "" for c in table[0]])
-                df = pd.DataFrame(table[1:], columns=header)
-                out.append((pi, ti, df))
+    reader = PdfReader(io.BytesIO(data))
+    for pi, page in enumerate(reader.pages, start=1):
+        text = page.extract_text(extraction_mode="layout") or ""
+        blocks: list[list[list[str]]] = []
+        cur: list[list[str]] = []
+        for line in text.splitlines():
+            cells = [c.strip() for c in re.split(r"\s{2,}", line.strip())]
+            if any(cells):
+                cur.append(cells)
+            elif cur:
+                blocks.append(cur)
+                cur = []
+        if cur:
+            blocks.append(cur)
+        for ti, rows in enumerate(blocks, start=1):
+            width = max(len(r) for r in rows)
+            if width < 2:  # prose, not a table
+                continue
+            rows = [r + [""] * (width - len(r)) for r in rows]
+            header = _dedupe_cols(rows[0])
+            df = pd.DataFrame(rows[1:], columns=header)
+            out.append((pi, ti, df))
     return out
 
 

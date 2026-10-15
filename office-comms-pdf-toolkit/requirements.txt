@@ -1,7 +1,6 @@
 streamlit>=1.36
 pandas>=2.0
-Pillow>=10.0
+pillow
 pypdf>=4.0
-pdfplumber>=0.11
 reportlab>=4.0
 openpyxl>=3.1

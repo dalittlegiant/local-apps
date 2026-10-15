@@ -3,7 +3,7 @@
 1. Corporate Comms Studio — templates (launch, training, schedule change,
    delay notice, audit reminder) -> email + Teams drafts + checklist.
 2. Offline PDF Toolkit — merge, split/extract pages, text watermark, table
-   extraction to Excel (pypdf + pdfplumber + reportlab).
+   extraction to Excel (pypdf + reportlab).
 3. Screenshot Beautifier — trim, padding, rounded corners, drop shadow
    (Pillow), batch + zip download.
 

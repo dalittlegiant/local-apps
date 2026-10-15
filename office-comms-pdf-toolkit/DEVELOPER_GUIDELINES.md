@@ -14,7 +14,8 @@ PDFs/screenshots 100% locally. Three tools (one tab each):
    Governance/Audit Reminder): fill variables → email + Teams drafts +
    interactive pre-launch checklist with progress.
 2. **PDF Toolkit** — merge, split/extract page ranges, diagonal text
-   watermark, table extraction → Excel (pypdf + pdfplumber + reportlab).
+   watermark, table extraction → Excel (pypdf + reportlab — pure Python,
+   Stlite/Pyodide-safe).
 3. **Screenshot Beautifier** — batch trim/padding/rounded-corners/drop-shadow
    (Pillow), per-image + zip download.
 
@@ -25,7 +26,9 @@ office-comms-pdf-toolkit/
 ├── app.py                  # Streamlit UI only
 ├── toolkit_core.py         # pure logic — no st.*
 ├── tests/run_tests.py      # 35 checks, no Streamlit needed
-└── requirements.txt        # + pypdf, pdfplumber, reportlab, Pillow
+└── requirements.txt        # + pypdf, reportlab, Pillow (all pure-Python /
+                             # Pyodide-safe; pdfplumber removed — it needs
+                             # pypdfium2, which has no WASM wheel)
 ```
 
 `app.py` inserts its own directory into `sys.path`; session keys use the
@@ -46,7 +49,9 @@ office-comms-pdf-toolkit/
   sized to each page's mediabox, merged via pypdf.
 - `extract_tables(data)` → `[(page, table_idx, df)]`; first row becomes the
   header (deduped); `tables_to_excel` writes one sheet per table
-  (`p{page}_t{idx}`, ≤31 chars).
+  (`p{page}_t{idx}`, ≤31 chars). Implemented on pypdf `layout`-mode text:
+  runs of 2+ spaces delimit columns, blank lines delimit tables,
+  single-column blocks are treated as prose and skipped.
 - `beautify(img, opts)` — auto-trim via `ImageChops.difference` against the
   corner color, manual % margin crop, padding canvas, rounded-corner alpha
   mask, drop shadow (blurred black rounded rect, offset). Returns RGBA.

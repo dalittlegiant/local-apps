@@ -82,6 +82,19 @@ seg = html.split('"diff_core.py": `')[1].rsplit("`", 2)[0]
 check("no unescaped backticks in files block",
       "`" not in seg.replace("\\`", ""))
 
+# --- wasm substitutions -------------------------------------------------------
+check("pypdfium2 swapped",
+      core.apply_wasm_substitutions(["pypdfium2", "pandas"]) == ["pypdf", "pandas"])
+check("pdfplumber dropped",
+      core.apply_wasm_substitutions(["pdfplumber", "pandas"]) == ["pandas"])
+check("case-insensitive",
+      core.apply_wasm_substitutions(["PyPDFium2"]) == ["pypdf"])
+check("dedup on swap",
+      core.apply_wasm_substitutions(["pypdf", "pypdfium2"]) == ["pypdf"])
+check("safe list untouched",
+      core.apply_wasm_substitutions(["pandas", "pillow", "pypdf"]) ==
+      ["pandas", "pillow", "pypdf"])
+
 # --- disclaimer --------------------------------------------------------------
 check("disclaimer warns on paths",
       "Local Path" in core.DISCLAIMER and "will NOT work" in core.DISCLAIMER)
