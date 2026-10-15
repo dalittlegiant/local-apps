@@ -1,0 +1,3 @@
+[server]
+# Allow 300MB+ CSV/Parquet uploads in the DuckDB SQL Sandbox.
+maxUploadSize = 500

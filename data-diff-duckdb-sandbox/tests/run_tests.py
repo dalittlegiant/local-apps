@@ -123,4 +123,59 @@ n5 = pd.DataFrame({"id": [1], "v": [None]})
 check("nan==nan no change",
       core.diff_datasets(o5, n5, ["id"])["summary"]["changed_cells"] == 0)
 
+# --- temp staging + duckdb-native reads --------------------------------
+import os
+import tempfile  # noqa: E402
+
+raw_csv = b"x,y\n1,2\n3,4\n"
+tpath = core.write_upload_to_temp("sales data.csv", raw_csv)
+check("temp staging round-trip", open(tpath, "rb").read() == raw_csv
+      and tpath.endswith(".csv") and "dd5_" in os.path.basename(tpath))
+check("temp outside repo", not os.path.abspath(tpath).startswith(
+    os.path.abspath(Path(__file__).resolve().parent.parent)))
+os.unlink(tpath)
+
+check("source clause parquet",
+      core.duckdb_source_clause("/tmp/x.parquet", "x.parquet")
+      == "read_parquet('/tmp/x.parquet')")
+check("source clause csv",
+      core.duckdb_source_clause("/tmp/x.csv", "X.CSV")
+      == "read_csv_auto('/tmp/x.csv')")
+try:
+    core.duckdb_source_clause("/tmp/x.xlsx", "x.xlsx")
+    check("source clause rejects xlsx", False)
+except ValueError:
+    check("source clause rejects xlsx", True)
+
+# end-to-end: staged csv scanned natively, no pandas involved
+tpath2 = core.write_upload_to_temp("t.csv", b"a,b\n1,x\n2,\n3,y\n")
+con2 = duckdb.connect()
+tname2 = core.sanitize_table_name("t.csv")
+con2.execute(f'CREATE OR REPLACE VIEW "{tname2}" AS SELECT * FROM '
+             + core.duckdb_source_clause(tpath2, "t.csv"))
+check("duckdb native scan",
+      con2.execute(f'SELECT SUM(CAST(a AS INTEGER)) FROM "{tname2}"')
+      .fetchone()[0] == 6)
+prof2 = core.profile_duckdb(con2, tname2)
+check("profile_duckdb rows/cols", prof2["rows"] == 3 and prof2["cols"] == 2)
+check("profile_duckdb null pct",
+      prof2["columns"][1]["null_pct"] == round(1 / 3 * 100, 2))
+check("profile_duckdb n_unique", prof2["columns"][0]["n_unique"] == 3)
+check("profile_duckdb frame renders",
+      list(core.profile_frame(prof2).columns)[:3]
+      == ["column", "dtype", "null_count"])
+os.unlink(tpath2)
+
+# profile_duckdb matches profile_df on identical data
+pdf = pd.DataFrame({"a": [1, None, 3], "b": ["x", "y", "z"]})
+con3 = duckdb.connect()
+con3.register("pdf", pdf)
+p_n = core.profile_duckdb(con3, "pdf")
+p_p = core.profile_df(pdf)
+check("profile parity rows", p_n["rows"] == p_p["rows"] == 3)
+check("profile parity nulls",
+      p_n["columns"][0]["null_count"] == p_p["columns"][0]["null_count"] == 1)
+check("profile parity unique",
+      p_n["columns"][1]["n_unique"] == p_p["columns"][1]["n_unique"] == 3)
+
 print(f"\nAll {passed} checks passed.")

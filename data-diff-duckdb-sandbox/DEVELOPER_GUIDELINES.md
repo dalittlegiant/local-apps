@@ -22,23 +22,35 @@ freezing — 100% local. Two tools (one tab each):
 data-diff-duckdb-sandbox/
 ├── app.py                  # Streamlit UI only
 ├── diff_core.py            # pure logic — no st.*
-├── tests/run_tests.py      # 21 checks, no Streamlit needed
+├── tests/run_tests.py      # 34 checks, no Streamlit needed
+├── .streamlit/config.toml  # maxUploadSize=500 (also at repo root)
 └── requirements.txt        # + duckdb, pyarrow
 ```
 
 `app.py` inserts its own directory into `sys.path`; session keys use the
-`dd5_` prefix; no `st.set_page_config` (suite launcher owns it).
+`dd5_` prefix; guarded `st.set_page_config` (try/except — no-op inside the
+suite launcher, which owns page config).
 
 ## Functions & methodology (`diff_core.py`, all pure)
 
 - `load_upload(name, raw, sheet)` — parquet via pyarrow, CSV with
   `utf-8-sig → utf-8 → cp1252 → latin-1`, Excel via openpyxl as `object`
-  dtype. Raises `ValueError` (never crashes) on bad input.
+  dtype. Raises `ValueError` (never crashes) on bad input. Used for xlsx
+  ingestion and the diff tab only — parquet/csv never touch pandas.
+- `write_upload_to_temp(name, raw)` — stages bytes in the OS temp dir
+  (outside the repo; never committable). Returns the path; caller deletes
+  it on table drop.
+- `duckdb_source_clause(path, name)` — `read_parquet(...)` /
+  `read_csv_auto(...)` FROM-fragment so DuckDB scans the staged file
+  natively.
 - `excel_sheets(raw)` — workbook sheet names for the per-file selector.
 - `sanitize_table_name(name)` — safe DuckDB identifiers (`t_` prefix for
   leading digits).
 - `profile_df(df)` — rows/cols, `memory_usage(deep=True)`, per-column
-  dtype, null count/%, `n_unique`.
+  dtype, null count/%, `n_unique` (pandas path: xlsx, diff tab).
+- `profile_duckdb(con, tname)` — same output shape, computed inside DuckDB
+  as a single-pass aggregation (no DataFrame materialized).
+- `profile_frame(profile)` — renders either profiler's dict.
 - `run_sql(con, sql)` — DuckDB execute → DataFrame; DB errors surface as
   `ValueError("SQL error: …")`.
 - `diff_datasets(old, new, keys)` — keys **string-cast on both sides** so
@@ -51,21 +63,34 @@ data-diff-duckdb-sandbox/
 
 ## App-specific conventions
 
-- Uploaded files are registered once as DuckDB views named after the
-  (sanitized) file; name collisions get `_2`, `_3` suffixes.
+- **Ingest-once registry** (`st.session_state["dd5_registry"]`, keyed by
+  `(filename, size[, sheet])`): parquet/csv are staged to temp and exposed
+  as DuckDB VIEWs over `read_parquet`/`read_csv_auto`; xlsx is parsed once
+  and materialized as a DuckDB TABLE. Nothing is re-parsed on reruns.
+  Name collisions get `_2`, `_3` suffixes. "Clear all tables" drops the
+  views/tables and deletes the temp files.
 - The DuckDB connection lives in session state (in-memory, per browser
   session).
+- **Query isolation**: the SQL editor + Run button live in an `st.form`, so
+  typing never triggers execution; results (preview, total, ms) are stored
+  in session state. UI preview is capped at 1,000 rows with total-row
+  count and execution ms shown; full results export via DuckDB
+  `COPY (sql) TO ...` (CSV/Parquet) on explicit click — no pandas.
 - Diff previews show the first 500–1000 rows; full results go through the
-  CSV/Excel/Parquet download buttons.
+  CSV/Excel/Parquet download buttons. Diff-tab DataFrames are cached in
+  session state keyed by `(tag, filename, size)`.
 
 ## Testing
 
 `python3 tests/run_tests.py` covers: csv/parquet loading, unsupported-type
 rejection, table-name sanitizing, null-%/memory profiling, SQL success +
-error paths, added/deleted detection, cell-level old→new values, schema
-add/remove/dtype-change, int-vs-str key compatibility, duplicate-key
-warnings, empty-key rejection, NaN==NaN suppression. `AppTest` boot
-verified for `app.py`.
+error paths, temp-file staging (round-trip, outside-repo, suffix),
+`duckdb_source_clause` fragments + xlsx rejection, end-to-end native scan
+of a staged CSV, `profile_duckdb` rows/nulls/uniques + frame rendering,
+`profile_duckdb`/`profile_df` parity, added/deleted detection, cell-level
+old→new values, schema add/remove/dtype-change, int-vs-str key
+compatibility, duplicate-key warnings, empty-key rejection, NaN==NaN
+suppression. `AppTest` boot verified for `app.py`.
 
 ## Future work
 

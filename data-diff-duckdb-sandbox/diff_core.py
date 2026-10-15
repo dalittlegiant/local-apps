@@ -1,12 +1,16 @@
 """Core logic for the Data Diff & DuckDB Sandbox. Pure — no ``st.*`` calls.
 
-Covers: upload loading (parquet/csv/xlsx), instant profiling, DuckDB SQL
-execution, and the dataset version diff engine (added/deleted rows, schema
-discrepancies, cell-level changes on primary keys).
+Covers: upload loading (parquet/csv/xlsx), temp-file staging for large
+uploads, DuckDB-native profiling, DuckDB SQL execution, and the dataset
+version diff engine (added/deleted rows, schema discrepancies, cell-level
+changes on primary keys).
 """
 
 import io
+import os
 import re
+import tempfile
+from pathlib import Path
 
 import pandas as pd
 
@@ -53,6 +57,68 @@ def sanitize_table_name(name: str) -> str:
     if base[0].isdigit():
         base = "t_" + base
     return base
+
+
+# --------------------------------------- temp staging for large uploads
+def write_upload_to_temp(name: str, raw: bytes) -> str:
+    """Stage uploaded bytes in the OS temp dir (outside the repo).
+
+    Returns the temp path. The caller owns cleanup (delete when the table
+    is dropped). Temp files are never inside the repo, so they can never
+    be committed.
+    """
+    suffix = Path(name).suffix.lower() or ".bin"
+    fd, path = tempfile.mkstemp(prefix="dd5_", suffix=suffix)
+    os.close(fd)
+    with open(path, "wb") as fh:
+        fh.write(raw)
+    return path
+
+
+def duckdb_source_clause(path: str, name: str) -> str:
+    """A FROM-clause fragment letting DuckDB scan the staged file directly.
+
+    No pandas round-trip: DuckDB reads parquet/csv natively, so a 300MB
+    file never becomes a 300MB DataFrame in Python memory.
+    """
+    q = path.replace("'", "''")
+    lname = name.lower()
+    if lname.endswith(".parquet"):
+        return f"read_parquet('{q}')"
+    if lname.endswith(".csv"):
+        return f"read_csv_auto('{q}')"
+    raise ValueError(f"DuckDB cannot scan {name} directly (use .parquet/.csv).")
+
+
+def profile_duckdb(con, tname: str) -> dict:
+    """Instant profiler that runs entirely inside DuckDB.
+
+    Single-pass aggregation — the file is never materialized as a
+    DataFrame. Returns the same shape as profile_df() so profile_frame()
+    renders it unchanged.
+    """
+    desc = con.execute(f'DESCRIBE SELECT * FROM "{tname}"').fetchall()
+    names = [str(r[0]) for r in desc]
+    dtypes = [str(r[1]) for r in desc]
+    bits = ["COUNT(*) AS _n"]
+    for i, c in enumerate(names):
+        q = c.replace('"', '""')
+        bits.append(f'COUNT(*) - COUNT("{q}") AS _nl{i}')
+        bits.append(f'COUNT(DISTINCT "{q}") AS _uq{i}')
+    row = con.execute(f'SELECT {", ".join(bits)} FROM "{tname}"').fetchone()
+    n = int(row[0])
+    columns = []
+    for i, (c, typ) in enumerate(zip(names, dtypes)):
+        nulls = int(row[1 + 2 * i])
+        columns.append({
+            "column": c,
+            "dtype": typ,
+            "null_count": nulls,
+            "null_pct": round(nulls / n * 100, 2) if n else 0.0,
+            "n_unique": int(row[2 + 2 * i]),
+        })
+    return {"rows": n, "cols": len(names), "memory_bytes": 0,
+            "columns": columns}
 
 
 # ---------------------------------------------------------- profiling
