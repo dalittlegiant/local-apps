@@ -73,6 +73,21 @@ suite launcher, which owns page config).
   Name collisions get `_2`, `_3` suffixes. "Clear all tables" drops the
   views/tables and deletes the temp files (path-mode files are never
   touched).
+- **Connection** (`_con()`): single persistent in-memory DuckDB connection
+  via `@st.cache_resource` — views and file metadata stay hot between
+  queries. Single-user local app: no cross-thread sharing.
+- **Query path** (`_run_query`): SELECTs run `COUNT(*)` for the total plus
+  `… LIMIT 1000`, both via zero-copy Arrow (`to_arrow_table()` — never
+  `fetchdf()`); `st.dataframe` renders the Arrow table natively. An
+  `st.info` banner shows the true total when it exceeds 1,000 rows.
+  Preview downloads (≤1,000 rows) convert Arrow→pandas, which is trivial
+  at that size. Full export is DuckDB `COPY` straight to a temp file —
+  no pandas, no StringIO.
+- **Profiler cache** (`st.session_state["dd5_prof_cache"]`): the
+  single-pass `COUNT(DISTINCT)` aggregation scans the full dataset, so
+  each table is profiled **once** — expander bodies execute on every
+  Streamlit rerun, and re-profiling every table on every Run click was
+  the dominant latency source. Cleared by "Clear all tables".
 - The DuckDB connection lives in session state (in-memory, per browser
   session).
 - **Query isolation**: the SQL editor + Run button live in an `st.form`, so

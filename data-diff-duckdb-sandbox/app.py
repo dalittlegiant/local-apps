@@ -42,10 +42,15 @@ PREVIEW_LIMIT = 1000
 
 
 # ------------------------------------------------------------ plumbing
+@st.cache_resource(show_spinner=False)
 def _con():
-    if P + "con" not in st.session_state:
-        st.session_state[P + "con"] = duckdb.connect()
-    return st.session_state[P + "con"]
+    """Single persistent in-memory DuckDB connection for the app.
+
+    Cached as a resource (not per-rerun, not per-session): views created
+    at ingest live here, and DuckDB keeps file metadata hot between
+    queries. Single-user local app — no cross-thread sharing concerns.
+    """
+    return duckdb.connect()
 
 
 def _registry():
@@ -161,6 +166,7 @@ def _drop_all():
             except Exception:
                 pass
     st.session_state[P + "registry"] = {}
+    st.session_state.pop(P + "prof_cache", None)
     for k in [k for k in st.session_state
               if k == P + "last_res" or (isinstance(k, tuple) and k[0] == P + "sheets")]:
         st.session_state.pop(k, None)
@@ -189,7 +195,9 @@ _SELECT_LIKE = ("SELECT", "WITH", "VALUES", "TABLE", "FROM", "PIVOT", "UNPIVOT",
 def _run_query(sql: str) -> dict:
     """Execute only on explicit form submit. Never runs on stray reruns.
 
-    Returns {"sql", "total", "preview", "ms", ...} or {"error": msg}.
+    SELECT previews come back as zero-copy Arrow tables (no pandas
+    conversion); Streamlit renders Arrow natively. Returns
+    {"sql", "total", "preview", "ms", ...} or {"error": msg}.
     """
     con = _con()
     clean = sql.strip().rstrip(";").strip()
@@ -201,15 +209,18 @@ def _run_query(sql: str) -> dict:
         if first in _SELECT_LIKE:
             total = con.execute(f"SELECT COUNT(*) FROM ({clean})").fetchone()[0]
             preview = con.execute(
-                f"SELECT * FROM ({clean}) LIMIT {PREVIEW_LIMIT}").fetchdf()
+                f"SELECT * FROM ({clean}) LIMIT {PREVIEW_LIMIT}"
+            ).to_arrow_table()
             ms = (time.perf_counter() - t0) * 1000
             return {"sql": clean, "total": int(total), "preview": preview,
                     "ms": ms}
         res = con.execute(clean)
         try:
-            preview = res.fetchdf().head(PREVIEW_LIMIT)
+            preview = res.to_arrow_table()
+            if preview.num_rows > PREVIEW_LIMIT:  # non-SELECT with output
+                preview = preview.slice(0, PREVIEW_LIMIT)
         except Exception:
-            preview = pd.DataFrame()
+            preview = None
         ms = (time.perf_counter() - t0) * 1000
         return {"sql": clean, "total": None, "preview": preview, "ms": ms,
                 "note": "Statement executed."}
@@ -241,7 +252,13 @@ def _full_export(sql: str, fmt: str):
             pass
 
 
-def _export_buttons(df: pd.DataFrame, stem: str, key: str):
+def _export_buttons(preview, stem: str, key: str):
+    """Preview download buttons. Accepts an Arrow table (≤1,000 rows) or
+    a pandas DataFrame; converts Arrow via to_pandas (trivial at this
+    size). No buttons when there is no preview (e.g. DDL statements)."""
+    if preview is None:
+        return
+    df = preview.to_pandas() if hasattr(preview, "to_pandas") else preview
     c1, c2, c3 = st.columns(3)
     with c1:
         st.download_button("⬇️ CSV", df.to_csv(index=False).encode("utf-8-sig"),
@@ -322,11 +339,21 @@ with tab_sql:
                            "loaded into Python memory.")
                 for tname in tnames:
                     with st.expander(f"`{tname}`"):
-                        try:
-                            prof = core.profile_duckdb(_con(), tname)
-                        except Exception as e:
-                            st.error(f"⚠️ Could not profile `{tname}`: {e}")
-                            continue
+                        # Profile once per table: the aggregation below scans
+                        # the full dataset (COUNT DISTINCT per column), so it
+                        # must NOT re-run on every Streamlit rerun — expander
+                        # bodies are not lazy.
+                        prof_cache = st.session_state.setdefault(
+                            P + "prof_cache", {})
+                        if tname not in prof_cache:
+                            try:
+                                with st.spinner(f"Profiling `{tname}`…"):
+                                    prof_cache[tname] = core.profile_duckdb(
+                                        _con(), tname)
+                            except Exception as e:
+                                st.error(f"⚠️ Could not profile `{tname}`: {e}")
+                                continue
+                        prof = prof_cache[tname]
                         st.markdown(f"{prof['rows']:,} rows × {prof['cols']} cols")
                         st.dataframe(core.profile_frame(prof),
                                      use_container_width=True, hide_index=True)
@@ -350,20 +377,29 @@ with tab_sql:
                 else:
                     with st.container(border=True):
                         st.subheader("Results")
-                        total_note = (f"{res['total']:,} total rows"
-                                      if res["total"] is not None
+                        preview = res.get("preview")
+                        n_prev = preview.num_rows if preview is not None else 0
+                        total = res.get("total")
+                        if total is not None and total > PREVIEW_LIMIT:
+                            st.info(
+                                "Showing top 1,000 rows for UI performance. "
+                                f"Total rows retrieved: {total:,}. Use the "
+                                "export button for the full dataset.")
+                        total_note = (f"{total:,} total rows"
+                                      if total is not None
                                       else "total row count n/a")
-                        st.caption(f"Showing top {len(res['preview']):,} of "
-                                   f"{total_note} · {res['ms']:.0f} ms")
+                        st.caption(f"Showing top {n_prev:,} of "
+                                   f"{total_note} · {res['ms']:.0f} ms "
+                                   f"(Arrow, zero-copy)")
                         if res.get("note"):
                             st.caption(res["note"])
-                        if not res["preview"].empty:
-                            st.dataframe(res["preview"], use_container_width=True)
+                        if n_prev:
+                            st.dataframe(preview, use_container_width=True)
                         else:
                             st.info("Query ran successfully — no rows to preview.")
                         st.markdown("**Download preview** (top "
                                     f"{PREVIEW_LIMIT:,} rows)")
-                        _export_buttons(res["preview"], "query_preview",
+                        _export_buttons(preview, "query_preview",
                                         P + "prev")
                         if res.get("sql"):
                             st.markdown("**Download full result** "
