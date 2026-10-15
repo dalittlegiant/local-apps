@@ -41,7 +41,7 @@ def db_path() -> Path:
 
 def connect(path: Path | None = None) -> sqlite3.Connection:
     path = Path(path) if path else db_path()
-    con = sqlite3.connect(path)
+    con = sqlite3.connect(path, check_same_thread=False)
     con.row_factory = sqlite3.Row
     con.executescript(SCHEMA)
     return con
