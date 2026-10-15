@@ -44,6 +44,11 @@ several tools belong together (`unified-data-studio`). Conventions:
    app, unique `url_path`), then add one `st.Page("../<dir>/app.py", …)`
    line in the launcher's section dict. Existing app folders are read-only
    — never refactor them to fit the launcher.
+6. Local persistence (SQLite/JSON): keep it in `<app>/storage/` (or
+   `<app>/data/`); both are gitignored along with `*.db`, `*.sqlite*`,
+   `*.csv`, `*.xlsx`, `*.parquet`. Never commit user data. The launcher's
+   sidebar can be themed with injected CSS (`st.markdown(...,
+   unsafe_allow_html=True)`), targeting `section[data-testid="stSidebar"]`.
 
 ## New-app checklist
 

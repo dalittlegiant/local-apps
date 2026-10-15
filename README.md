@@ -15,6 +15,11 @@ Shared developer conventions live in [DEVELOPER_GUIDE.md](DEVELOPER_GUIDE.md); e
 | SQL Sandbox & Diff Engine | `data-diff-duckdb-sandbox/` | DuckDB SQL over local parquet/CSV/Excel + dataset version diff (added/deleted/schema/cell-level). |
 | Messy Excel Sanitizer | `messy-excel-sanitizer/` | Batch Excel/CSV intake, sanitization pipeline, schema validation, master dataset export. |
 | Comms & PDF Toolkit | `office-comms-pdf-toolkit/` | Corporate comms drafts + checklists, offline PDF merge/split/watermark/table-extract, screenshot beautifier. |
+| Flowchart Studio | `interactive-flowchart-studio/` | Decision-tree/SOP builder with live preview; standalone interactive HTML, Mermaid, and SVG export. |
+| BI Requirement & Meeting Hub | `bi-requirement-meeting-hub/` | SQLite-backed requirement capture, triage board, one-click minutes generator (Markdown/Email/Teams). |
+| AI Prompt & Privacy Hub | `ai-prompt-privacy-hub/` | Framework prompt builder + custom templates, reversible local PII/schema masker, repo context packer. |
+| Knowledge & Snippet Vault | `knowledge-snippet-vault/` | SQLite code snippet library (DAX/M/Python/R/SQL) + LaTeX study notes, search, cheat-sheet export. |
+| Data Quality Watchdog | `data-quality-watchdog/` | Pre-refresh health checks (dup PK, null spikes, outliers), baseline drift compare, report card + exceptions CSV. |
 
 ## Running an app
 
