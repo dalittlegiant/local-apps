@@ -41,6 +41,27 @@ P = "dd5_"
 PREVIEW_LIMIT = 1000
 
 
+def _sweep_stale_staged_files(max_age_hours: float = 24) -> None:
+    """Delete staged upload temp files (`dd5_*` in the OS temp dir) left
+    behind by earlier sessions (e.g. the tab was closed without "Clear
+    all tables"). Runs once per app start; never touches the repo."""
+    import shutil
+    from pathlib import Path
+    now = time.time()
+    base = Path(tempfile.gettempdir())
+    for p in base.glob("dd5_*"):
+        try:
+            if p.is_file() and now - p.stat().st_mtime > max_age_hours * 3600:
+                p.unlink(missing_ok=True)
+            elif p.is_dir() and now - p.stat().st_mtime > max_age_hours * 3600:
+                shutil.rmtree(p, ignore_errors=True)
+        except OSError:
+            continue
+
+
+_sweep_stale_staged_files()
+
+
 # ------------------------------------------------------------ plumbing
 @st.cache_resource(show_spinner=False)
 def _con():
@@ -364,6 +385,10 @@ with tab_sql:
                 st.session_state.setdefault(P + "sql", default_sql)
                 with st.form(key=P + "sqlform"):
                     st.text_area("DuckDB SQL", height=140, key=P + "sql")
+                    st.caption("⚠️ This box executes **arbitrary DuckDB SQL** "
+                               "with full local file access (`COPY TO`, "
+                               "`read_csv`, …) — it runs as you, on your "
+                               "machine. Only run SQL you trust.")
                     run = st.form_submit_button("▶️ Run query", type="primary")
                 if run:
                     with st.spinner("Running query…"):

@@ -101,4 +101,19 @@ check("disclaimer warns on paths",
 check("disclaimer warns on offline",
       "internet" in core.DISCLAIMER)
 
+# --- security hardening (M4): script escaping ----------------------------------
+evil_src = 'x = "</script><script>alert(1)</script>"'
+doc = core.build_html("t", {"app.py": evil_src}, ["pandas"])
+check("script closer escaped",
+      "</script><script>" not in doc and "<\\/script" in doc)
+check("script block intact", doc.count("</script>") == 2)
+check("requirement json-escaped",
+      core._safe_requirement("pandas") == '"pandas"')
+check("evil requirement dropped",
+      core._safe_requirement('x","];alert(1);//') is None)
+doc2 = core.build_html("t", {"app.py": "pass"},
+                       ["pandas", 'x","];alert(1);//'])
+check("evil requirement excluded from bundle",
+      "alert(1)" not in doc2 and '"pandas"' in doc2)
+
 print(f"\nAll {passed} checks passed.")

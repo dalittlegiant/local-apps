@@ -187,3 +187,12 @@ Session prefixes: `ppt4_`, `dd5_`, `san6_`, `pdf7_`.
 - Relationships/hierarchies in the TMDL parser (currently skipped).
 - Audit log persistence (SQLite) instead of session state.
 - Bulk editor: per-visual-type `objects` (dataLabels, legend, …) standards.
+
+### Zip & temp hygiene (2026-10-15)
+
+`lib.safe_extractall()` is the only allowed way to extract user-uploaded zips
+(ZipSlip-guarded: `../`/absolute members are skipped). `lib.drop_temp_dir()` /
+`lib.sweep_stale_temp_dirs()` manage `mkdtemp` lifecycle: the DAX editor drops the
+previous extraction on each new load and offers a "Clear temporary files" button;
+the theme page deletes its temp dir in a `finally` right after parsing; both sweep
+stale dirs at page start.

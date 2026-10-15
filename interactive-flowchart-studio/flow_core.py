@@ -1073,14 +1073,15 @@ def wrap_sharepoint_html(raw: str, title: str = "Embedded content") -> str:
 
 
 # ------------------------------------------------------------ security
-DEFAULT_CSP = ("default-src 'none'; img-src 'self' data: blob: https:; "
+DEFAULT_CSP = ("default-src 'none'; img-src 'self' data: blob:; "
                "style-src 'self' 'unsafe-inline'; script-src 'unsafe-inline'; "
                "font-src 'self' data:; connect-src 'none'; "
                "frame-ancestors 'self' *;")
 """Zero-exfiltration Content-Security-Policy: no outbound data leaks
 (connect-src 'none'), no external scripts (script-src 'unsafe-inline'
-only), while inline styles/scripts and local/same-origin images keep
-working on any hosting platform."""
+only), and no external images (img-src 'self' data: blob: blocks
+tracking pixels) — while inline styles/scripts and local/same-origin
+images (./banner.jpg, /sites/...) keep working on any hosting platform."""
 
 _EXTERNAL_URL = re.compile(r"^(?:https?:)?//", re.IGNORECASE)
 _CSP_META = re.compile(
@@ -1104,8 +1105,9 @@ def _line_snippet(text: str, pos: int, width: int = 110) -> str:
 def audit_html_security(html_text: str) -> dict:
     """Scan HTML/CSS/JS for security risks before export.
 
-    Flags external scripts/stylesheets (``src``/``href``/``@import`` with
-    http(s):// or protocol-relative URLs), outbound network calls
+    Flags external scripts/stylesheets/media (``src``/``href``/``@import``
+    with http(s):// or protocol-relative URLs — scripts, styles, images,
+    iframes, video/audio), outbound network calls
     (``fetch(``, ``XMLHttpRequest``, ``navigator.sendBeacon``,
     ``WebSocket``), and unsafe execution sinks (``eval(``,
     ``new Function(``). Returns ``{"passed": bool, "findings": [...]}``
@@ -1144,6 +1146,19 @@ def audit_html_security(html_text: str) -> dict:
         url = m.group(1)
         if _EXTERNAL_URL.match(url):
             findings.append({"kind": "external-stylesheet",
+                             "line": _line_no(doc, m.start()),
+                             "detail": url})
+
+    # External media/frames: tracking pixels and beacons hide here. The
+    # tightened CSP (img-src 'self' data: blob:) blocks these at runtime;
+    # the audit surfaces them so the author can strip the tag entirely.
+    for m in re.finditer(
+            r"<(?:img|iframe|video|audio|source|embed|track)\b[^>]*"
+            r"\bsrc\s*=\s*(\"[^\"]*\"|'[^']*'|[^\\s>]+)",
+            doc, re.IGNORECASE):
+        url = m.group(1).strip("\"'")
+        if _EXTERNAL_URL.match(url):
+            findings.append({"kind": "external-media",
                              "line": _line_no(doc, m.start()),
                              "detail": url})
 

@@ -21,6 +21,7 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
+from lib import drop_temp_dir, safe_extractall, sweep_stale_temp_dirs
 from lib.tmdl_io import (
     apply_line_ops,
     build_edit_ops,
@@ -80,22 +81,37 @@ def _load_folder(root: Path):
     _load_from_paths(files, "folder", root.name)
 
 
+def _drop_zip_tmp() -> None:
+    """Remove the previous zip extraction (if any) so temp dirs never
+    accumulate in /tmp."""
+    prev = _state().pop("zip_tmp", None)
+    drop_temp_dir(prev)
+
+
 def _load_zip(uploaded) -> Path:
+    _drop_zip_tmp()
+    # Best-effort sweep of extractions leaked by earlier sessions.
+    sweep_stale_temp_dirs("pbip_")
     tmp = Path(tempfile.mkdtemp(prefix="pbip_"))
-    with zipfile.ZipFile(uploaded) as z:
-        z.extractall(tmp)
-    # A PBIP zip usually contains one top-level folder; detect handles nesting.
-    candidates = [p for p in tmp.iterdir() if p.is_dir()]
-    root = tmp
-    for c in candidates:
-        try:
-            detect_pbip_format(c)
-            root = c
-            break
-        except ValueError:
-            continue
-    _, files = detect_pbip_format(root)
-    _load_from_paths(files, "zip", uploaded.name)
+    try:
+        with zipfile.ZipFile(uploaded) as z:
+            safe_extractall(z, tmp)
+        # A PBIP zip usually contains one top-level folder; detect handles nesting.
+        candidates = [p for p in tmp.iterdir() if p.is_dir()]
+        root = tmp
+        for c in candidates:
+            try:
+                detect_pbip_format(c)
+                root = c
+                break
+            except ValueError:
+                continue
+        _, files = detect_pbip_format(root)
+        _load_from_paths(files, "zip", uploaded.name)
+    except Exception:
+        drop_temp_dir(tmp)  # don't leak the extraction on failure
+        raise
+    _state()["zip_tmp"] = str(tmp)
     return tmp
 
 
@@ -156,6 +172,12 @@ with st.expander("① Load a PBIP model", expanded=not s["loaded"]):
                 st.error(f"⚠️ {e}")
             except zipfile.BadZipFile:
                 st.error("⚠️ That file is not a valid .zip.")
+        if s.get("zip_tmp") and st.button("🧹 Clear temporary files",
+                                          key="tmdl_clear_tmp"):
+            _drop_zip_tmp()
+            n = sweep_stale_temp_dirs("pbip_")
+            st.success(f"Temporary extraction folders removed ({n} stale swept).")
+            st.rerun()
 
 if not s["loaded"]:
     with st.container(border=True):

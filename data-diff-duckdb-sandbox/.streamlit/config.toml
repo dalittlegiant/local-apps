@@ -1,3 +1,10 @@
+[browser]
+# Privacy: never phone usage statistics home to Streamlit.
+gatherUsageStats = false
+
 [server]
 # Upload ceiling for the DuckDB SQL Sandbox (Streamlit default is 200).
 maxUploadSize = 1000
+# Bind loopback only — never expose the local server (and its in-memory
+# company data) to other machines on the same Wi-Fi/LAN.
+address = "127.0.0.1"

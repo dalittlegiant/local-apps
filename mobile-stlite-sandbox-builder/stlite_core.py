@@ -6,6 +6,7 @@ app in the browser via the ``@stlite/mountable`` CDN build (Pyodide +
 a stlite Streamlit runtime — no server, no Python install needed).
 """
 
+import json
 import re
 from pathlib import Path
 
@@ -109,10 +110,25 @@ def bundle_files(app: dict) -> dict:
 
 
 def js_escape(s: str) -> str:
-    """Escape Python source for embedding in a JS template literal."""
+    """Escape Python source for embedding in a JS template literal.
+
+    Also neutralizes ``</script`` so bundled sources containing embedded
+    HTML/JS can never break out of the outer ``<script>`` block
+    (``<\\/script`` is valid inside a JS string literal).
+    """
     return (s.replace("\\", "\\\\")
              .replace("`", "\\`")
-             .replace("${", "\\${"))
+             .replace("${", "\\${")
+             .replace("</script", "<\\/script"))
+
+
+def _safe_requirement(name: str) -> str | None:
+    """A requirement name as a JSON string literal, or None if the name
+    contains characters outside the safe package-name alphabet (blocks
+    JS string-breakout via the extra-packages input)."""
+    if not re.fullmatch(r"[A-Za-z0-9_.\-+]+", name):
+        return None
+    return json.dumps(name)
 
 
 def build_html(title: str, files: dict, requirements: list) -> str:
@@ -121,7 +137,8 @@ def build_html(title: str, files: dict, requirements: list) -> str:
         f'      "{name}": `{js_escape(content)}`'
         for name, content in files.items()
     )
-    reqs_js = ", ".join(f'"{r}"' for r in requirements)
+    reqs = [_safe_requirement(r) for r in requirements]
+    reqs_js = ", ".join(r for r in reqs if r)
     safe_title = title.replace("<", "&lt;").replace(">", "&gt;")
     return f"""<!DOCTYPE html>
 <html lang="en">

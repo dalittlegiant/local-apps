@@ -139,7 +139,17 @@ with tab_mask:
                 st.subheader("Mapping dictionary (stored locally)")
                 st.json(mapping)
                 st.caption("Mapping auto-saved to storage/mask_map.json — "
-                           "the Unmask tab reads it back.")
+                           "the Unmask tab reads it back. The file holds the "
+                           "original names in plaintext on this machine only.")
+                if st.button("🧹 Clear Local Mask Dictionary (mask_map.json)",
+                             key=P + "clear_map",
+                             help="Permanently deletes the local {token: "
+                                  "original} mapping file."):
+                    if core.clear_mapping():
+                        st.success("Local mask dictionary deleted.")
+                    else:
+                        st.info("No local mask dictionary file exists.")
+                    st.rerun()
     else:
         with st.container(border=True):
             ai_out = st.text_area("Paste the AI's response / code", height=160,

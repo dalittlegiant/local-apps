@@ -186,3 +186,11 @@ click-to-trace, bento cards and selection all work; `fetch()` is blocked
   badge currently key off node type).
 - Sub-flow / swimlane grouping.
 - PNG export of the diagram (needs a headless renderer — out of scope).
+
+### Export security hardening (2026-10-15)
+
+`audit_html_security()` also flags external `<img>`/`<iframe>`/`<video>`/`<audio>`/
+`<source>`/`<embed>` `src` URLs (`external-media` kind) — local `./`, `/`, and
+`data:` media pass. The injected `DEFAULT_CSP` was tightened to
+`img-src 'self' data: blob:` (no `https:`) so tracking pixels are blocked at runtime
+while local/same-origin SharePoint images keep working.

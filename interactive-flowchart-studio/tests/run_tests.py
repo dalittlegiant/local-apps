@@ -292,7 +292,7 @@ check("static svg font size", 'font-size="16"' in svg_fs)
 
 # --- security sanitizer / CSP / dual-format ----------------------------------------------
 check("csp policy text", core.DEFAULT_CSP == "default-src 'none'; "
-      "img-src 'self' data: blob: https:; style-src 'self' 'unsafe-inline'; "
+      "img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; "
       "script-src 'unsafe-inline'; font-src 'self' data:; connect-src 'none'; "
       "frame-ancestors 'self' *;")
 audit_clean = core.audit_html_security(
@@ -322,6 +322,15 @@ check("audit line + url",
 check("audit import flagged",
       any(f["kind"] == "external-stylesheet" and "i.css" in f["detail"]
           for f in audit_evil["findings"]))
+check("audit external media flagged",
+      any(f["kind"] == "external-media"
+          for f in core.audit_html_security(
+              '<img src="https://evil.example/p.png">'
+              '<iframe src="http://evil.example/f"></iframe>')["findings"]))
+check("audit local media passes",
+      core.audit_html_security(
+          '<img src="./banner.jpg"><img src="/sites/x/logo.png">'
+          '<img src="data:image/png;base64,AAA">')["passed"])
 check("audit empty passes", core.audit_html_security("")["passed"])
 csp_doc = core.inject_csp("<html><head><title>t</title></head>"
                           "<body>x</body></html>")

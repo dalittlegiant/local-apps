@@ -47,8 +47,15 @@ several tools belong together (`unified-data-studio`). Conventions:
    the launcher.
 6. Local persistence (SQLite/JSON): keep it in `<app>/storage/` (or
    `<app>/data/`); both are gitignored along with `*.db`, `*.sqlite*`,
-   `*.csv`, `*.xlsx`, `*.parquet`. Never commit user data. Large transient
-   uploads go to the OS temp dir (`tempfile`), never the repo.
+   `*.csv`, `*.xlsx`, `*.parquet`, `*.bim`, `*.tmdl`, `*.pbix`, `.env`.
+   Never commit user data. Large transient uploads go to the OS temp dir
+   (`tempfile`), never the repo — and temp dirs must be cleaned up
+   (delete-on-replace + stale sweep via `lib.safe_extractall` helpers or
+   equivalent; see unified-data-studio).
+7. Streamlit privacy lockdown: every `.streamlit/config.toml` must set
+   `[browser] gatherUsageStats = false` (telemetry off) and
+   `[server] address = "127.0.0.1"` (loopback-only bind — never expose the
+   local server to the LAN). `tests/test_repo_hardening.py` guards both.
 7. Sidebar theme (launcher-owned CSS, injected once via `st.markdown(...,
    unsafe_allow_html=True)`): emojis on the 5 pillar headers only —
    `st.Page` items use no icon. Sub-item styling targets
@@ -163,8 +170,15 @@ cases, and every warning branch. Then `python3 -m py_compile app.py`.
 
 - Apps are local-only: no network calls, no API keys, no secrets in the repo.
 - Never commit data exports (they contain staff emails etc.). `.gitignore`
-  covers `__pycache__/`, `*.pyc`, `.venv/` — add data filenames if an app
-  writes them to disk.
+  covers `__pycache__/`, `*.pyc`, `.venv/`, `*.db`, `*.sqlite*`, `*.csv`,
+  `*.xlsx`, `*.xls`, `*.parquet`, `data/`, `storage/`, `*.bim`, `*.tmdl`,
+  `*.pbix`, `.env` — add data filenames if an app writes them to disk.
+  `SECURITY_AUDIT_REPORT.md` is gitignored (local-only audit artifact).
+- Never `zipfile.extractall()` on user uploads — use the ZipSlip-guarded
+  `lib.safe_extractall()` (unified-data-studio) or equivalent.
+- JS-embedding rule: any Python string interpolated into a `<script>` block
+  must neutralize `</script` (e.g. `<\/script`) and JSON-encode dynamic
+  values (`json.dumps`), never f-string them raw.
 
 ## What goes where
 

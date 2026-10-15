@@ -116,3 +116,10 @@ suppression. `AppTest` boot verified for `app.py`.
 - Saved query library per table.
 - Side-by-side cell diff with before/after highlighting.
 - Direct `.xlsx` multi-sheet registration without a selector round-trip.
+
+### Security notes (2026-10-15)
+
+The SQL box executes arbitrary DuckDB SQL with full local file access — a caption
+under the editor says so (by design for a single-user local sandbox). Staged
+upload temp files (`dd5_*`) are deleted on "Clear all tables"; a startup sweep
+(`_sweep_stale_staged_files`) removes ones leaked by closed sessions.

@@ -71,3 +71,11 @@ open a generated HTML in real Chromium — verified 2026-10-15 that
 `stlite.mount({requirements, entrypoint, files})` is accepted and the
 kernel boot proceeds to wheel resolution (full UI render additionally
 needs CDN access for Pyodide + wheels).
+
+### Bundle escaping (2026-10-15)
+
+`js_escape()` neutralizes `</script` → `<\/script` so bundled sources containing
+embedded HTML/JS can never break out of the outer `<script>` block. Requirement
+names go through `_safe_requirement()` (`json.dumps` + `^[A-Za-z0-9_.\-+]+$`
+validation) — raw f-string interpolation into JS is forbidden (see root
+DEVELOPER_GUIDE.md Security).

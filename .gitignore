@@ -13,3 +13,12 @@ venv/
 *.parquet
 data/
 storage/
+
+# BI project artifacts: never commit real models or credentials
+*.bim
+*.tmdl
+*.pbix
+.env
+
+# Local-only audit report (kept on this machine, not for the public repo)
+SECURITY_AUDIT_REPORT.md

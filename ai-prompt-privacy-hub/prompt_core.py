@@ -192,6 +192,19 @@ def load_mapping(path: Path | None = None) -> dict:
     return {}
 
 
+def clear_mapping(path: Path | None = None) -> bool:
+    """Permanently delete the local mask dictionary (the plaintext
+    {token: original PII} mapping). Returns True if a file was removed."""
+    path = Path(path) if path else _map_path()
+    try:
+        path.unlink()
+        return True
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return False
+
+
 def unmask_text(text: str, mapping: dict) -> str:
     """Swap tokens back to originals (longest token first)."""
     out = text

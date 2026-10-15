@@ -63,3 +63,9 @@ verified for `app.py`.
 - Named masking profiles (per-project term lists).
 - Token-count estimate before sending to an LLM.
 - Diff view of masked vs original.
+
+### Mask-map hygiene (2026-10-15)
+
+`storage/mask_map.json` holds the plaintext {token: original PII} mapping (gitignored,
+local only). `prompt_core.clear_mapping()` + the "Clear Local Mask Dictionary" button
+permanently delete it; the UI caption states the file's contents and location.

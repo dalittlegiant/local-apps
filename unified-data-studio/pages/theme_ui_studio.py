@@ -19,6 +19,7 @@ from pathlib import Path
 import streamlit as st
 import streamlit.components.v1 as components
 
+from lib import drop_temp_dir, safe_extractall, sweep_stale_temp_dirs
 from lib.theme_builder import (
     FONT_FACES, PALETTES, apply_vco_standard, build_theme, default_settings,
     render_preview_html, scan_visual_jsons, standard_presets, theme_to_json,
@@ -204,10 +205,14 @@ with tab_bulk:
         else:
             zup = st.file_uploader("PBIP report .zip", type=["zip"], key=T + "bulk_zip")
             if zup:
+                # Sweep extractions leaked by earlier sessions, then extract
+                # safely (ZipSlip-guarded) and delete the temp dir as soon as
+                # the visuals are parsed into memory.
+                sweep_stale_temp_dirs("pbi_report_")
+                tmp = Path(tempfile.mkdtemp(prefix="pbi_report_"))
                 try:
-                    tmp = Path(tempfile.mkdtemp(prefix="pbi_report_"))
                     with zipfile.ZipFile(zup) as z:
-                        z.extractall(tmp)
+                        safe_extractall(z, tmp)
                     for p in sorted(tmp.rglob("visual.json")):
                         try:
                             visuals.append((str(p.relative_to(tmp)),
@@ -216,6 +221,8 @@ with tab_bulk:
                             visuals.append((str(p.relative_to(tmp)), {}))
                 except zipfile.BadZipFile:
                     st.error("⚠️ That file is not a valid .zip.")
+                finally:
+                    drop_temp_dir(tmp)
 
     if visuals:
         with st.container(border=True):
