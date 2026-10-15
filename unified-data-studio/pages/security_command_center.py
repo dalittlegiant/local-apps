@@ -89,16 +89,17 @@ with tab_rls:
         "exploded into one row per asset. CSVs are read with encoding "
         "auto-detection (utf-8-sig → cp1252); Excel avoids encoding issues."
     )
-    c1, c2 = st.columns(2)
-    with c1:
-        hr_up = st.file_uploader("HR Staff List (.xlsx)", type=["xlsx", "xls"], key="sec_rls_hr")
-        rules_up = st.file_uploader("Rule_Book (.csv / .xlsx)", type=["csv", "xlsx", "xls"],
-                                    key="sec_rls_rules")
-    with c2:
-        ex_up = st.file_uploader("Exceptions (.csv / .xlsx, optional)",
-                                 type=["csv", "xlsx", "xls"], key="sec_rls_ex")
-        sm_up = st.file_uploader("Asset_Master (.csv / .xlsx, optional)",
-                                 type=["csv", "xlsx", "xls"], key="sec_rls_sm")
+    with st.container(border=True):
+        c1, c2 = st.columns(2)
+        with c1:
+            hr_up = st.file_uploader("HR Staff List (.xlsx)", type=["xlsx", "xls"], key="sec_rls_hr")
+            rules_up = st.file_uploader("Rule_Book (.csv / .xlsx)", type=["csv", "xlsx", "xls"],
+                                        key="sec_rls_rules")
+        with c2:
+            ex_up = st.file_uploader("Exceptions (.csv / .xlsx, optional)",
+                                     type=["csv", "xlsx", "xls"], key="sec_rls_ex")
+            sm_up = st.file_uploader("Asset_Master (.csv / .xlsx, optional)",
+                                     type=["csv", "xlsx", "xls"], key="sec_rls_sm")
 
     with st.expander("📥 Download template files"):
         st.download_button("Rule_Book template",
@@ -139,11 +140,22 @@ with tab_rls:
 
     final = st.session_state[P + "final_rls"]
     if final is not None:
-        st.subheader("Access table preview (one row per user per asset)")
-        st.dataframe(final, use_container_width=True)
-        st.download_button("⬇️ Download access table (CSV)",
-                           final.to_csv(index=False).encode("utf-8-sig"),
-                           "Access_Table.csv", "text/csv", key="sec_rls_dl")
+        with st.container(border=True):
+            st.subheader("Access table preview (one row per user per asset)")
+            st.dataframe(final, use_container_width=True)
+            st.download_button("⬇️ Download access table (CSV)",
+                               final.to_csv(index=False).encode("utf-8-sig"),
+                               "Access_Table.csv", "text/csv", key="sec_rls_dl")
+    else:
+        with st.container(border=True):
+            st.subheader("Get started")
+            st.markdown(
+                "1. Upload the **HR Staff List** and the **Rule_Book** above "
+                "(Exceptions and Asset_Master are optional).\n"
+                "2. Click **▶️ Simulate & Combine** — the access table appears here.\n"
+                "3. Download it as CSV, then use the other tabs for deltas, "
+                "audits, and queries."
+            )
 
 # ----------------------------------------------------- TAB 2: DELTA ---
 with tab_delta:
@@ -151,17 +163,18 @@ with tab_delta:
     st.caption("Upload the previous HR list and the new HR list. Leavers are "
                "flagged for access revocation; joiners get suggested access "
                "from the Rule_Book.")
-    d1, d2, d3 = st.columns(3)
-    with d1:
-        old_up = st.file_uploader("Previous HR List (.xlsx)", type=["xlsx", "xls"],
-                                  key="sec_delta_old")
-    with d2:
-        new_up = st.file_uploader("New HR List (.xlsx)", type=["xlsx", "xls"],
-                                  key="sec_delta_new")
-    with d3:
-        delta_rules_up = st.file_uploader("Rule_Book (.csv / .xlsx)",
-                                          type=["csv", "xlsx", "xls"],
-                                          key="sec_delta_rules")
+    with st.container(border=True):
+        d1, d2, d3 = st.columns(3)
+        with d1:
+            old_up = st.file_uploader("Previous HR List (.xlsx)", type=["xlsx", "xls"],
+                                      key="sec_delta_old")
+        with d2:
+            new_up = st.file_uploader("New HR List (.xlsx)", type=["xlsx", "xls"],
+                                      key="sec_delta_new")
+        with d3:
+            delta_rules_up = st.file_uploader("Rule_Book (.csv / .xlsx)",
+                                              type=["csv", "xlsx", "xls"],
+                                              key="sec_delta_rules")
 
     if st.button("🔍 Compare", type="primary", key="sec_delta_go"):
         if not old_up or not new_up:
@@ -185,27 +198,37 @@ with tab_delta:
 
     res = st.session_state[P + "delta_res"]
     if res:
-        leavers, joiners, movers = res["leavers"], res["joiners"], res["movers"]
-        if not leavers.empty:
-            st.error(f"🚨 **{len(leavers)} Leaver(s)** — revoke their access now:")
-            show = [c for c in [EMAIL, DEPT, POS] if c in leavers.columns]
-            st.dataframe(leavers[show], use_container_width=True)
-        else:
-            st.success("No leavers detected. ✅")
-        st.divider()
-        if not joiners.empty:
-            st.warning(f"👋 **{len(joiners)} Joiner(s)** — provision access:")
-            show = [c for c in [EMAIL, DEPT, POS, STORE_ACCESS, STORE_NAME,
-                                REPORT_ACCESS, "Source"] if c in joiners.columns]
-            st.dataframe(joiners[show], use_container_width=True)
-        else:
-            st.success("No joiners detected. ✅")
-        st.divider()
-        if not movers.empty:
-            st.warning(f"🔀 **{len(movers)} Mover(s)** — department or position changed:")
-            st.dataframe(movers, use_container_width=True)
-        else:
-            st.success("No movers detected. ✅")
+        with st.container(border=True):
+            leavers, joiners, movers = res["leavers"], res["joiners"], res["movers"]
+            if not leavers.empty:
+                st.error(f"🚨 **{len(leavers)} Leaver(s)** — revoke their access now:")
+                show = [c for c in [EMAIL, DEPT, POS] if c in leavers.columns]
+                st.dataframe(leavers[show], use_container_width=True)
+            else:
+                st.success("No leavers detected. ✅")
+            st.divider()
+            if not joiners.empty:
+                st.warning(f"👋 **{len(joiners)} Joiner(s)** — provision access:")
+                show = [c for c in [EMAIL, DEPT, POS, STORE_ACCESS, STORE_NAME,
+                                    REPORT_ACCESS, "Source"] if c in joiners.columns]
+                st.dataframe(joiners[show], use_container_width=True)
+            else:
+                st.success("No joiners detected. ✅")
+            st.divider()
+            if not movers.empty:
+                st.warning(f"🔀 **{len(movers)} Mover(s)** — department or position changed:")
+                st.dataframe(movers, use_container_width=True)
+            else:
+                st.success("No movers detected. ✅")
+    else:
+        with st.container(border=True):
+            st.subheader("Get started")
+            st.markdown(
+                "1. Upload the **previous** and **new** HR lists above "
+                "(a Rule_Book is optional but enables access suggestions).\n"
+                "2. Click **🔍 Compare** — joiners, leavers, and movers appear here.\n"
+                "3. Leavers are flagged for access revocation."
+            )
 
 # ----------------------------------------------------- TAB 3: AUDIT ---
 with tab_audit:
@@ -214,70 +237,75 @@ with tab_audit:
                "what staff *should* have (HR + Rule_Book) against what they "
                "*actually* have — compared strictly on the Work Email column.")
 
-    st.subheader("➕ Log granted access")
-    with st.form("sec_audit_form", clear_on_submit=True):
-        f1, f2 = st.columns(2)
-        with f1:
-            a_date = st.date_input("Date", value=date.today())
-            a_email = st.text_input("Work Email").strip()
-            a_remark = st.text_input("Remark (justification for this access)").strip()
-        with f2:
-            a_asset = st.text_input("Asset_Name (e.g. Sales Dashboard)").strip()
-            a_perm = st.selectbox("Permission_Level",
-                                  ["Viewer", "Contributor", "Member", "Admin"])
-        if st.form_submit_button("Add entry"):
-            if not a_email or not a_asset:
-                st.error("Work Email and Asset_Name are required.")
-            else:
-                row = pd.DataFrame([{
-                    "Date": a_date.isoformat(), EMAIL: a_email,
-                    "Asset_Name": a_asset, "Permission_Level": a_perm,
-                    "Remark": a_remark,
-                }])
-                st.session_state[P + "audit_log"] = pd.concat(
-                    [st.session_state[P + "audit_log"], row], ignore_index=True)
-                st.success("Entry logged.")
+    with st.container(border=True):
+        st.subheader("➕ Log granted access")
+        with st.form("sec_audit_form", clear_on_submit=True):
+            f1, f2 = st.columns(2)
+            with f1:
+                a_date = st.date_input("Date", value=date.today())
+                a_email = st.text_input("Work Email").strip()
+                a_remark = st.text_input("Remark (justification for this access)").strip()
+            with f2:
+                a_asset = st.text_input("Asset_Name (e.g. Sales Dashboard)").strip()
+                a_perm = st.selectbox("Permission_Level",
+                                      ["Viewer", "Contributor", "Member", "Admin"])
+            if st.form_submit_button("Add entry"):
+                if not a_email or not a_asset:
+                    st.error("Work Email and Asset_Name are required.")
+                else:
+                    row = pd.DataFrame([{
+                        "Date": a_date.isoformat(), EMAIL: a_email,
+                        "Asset_Name": a_asset, "Permission_Level": a_perm,
+                        "Remark": a_remark,
+                    }])
+                    st.session_state[P + "audit_log"] = pd.concat(
+                        [st.session_state[P + "audit_log"], row], ignore_index=True)
+                    st.success("Entry logged.")
 
-    st.subheader("📜 Audit log")
-    audit = st.session_state[P + "audit_log"]
-    if not audit.empty:
-        st.dataframe(audit, use_container_width=True)
-        c1, c2 = st.columns(2)
-        with c1:
-            st.download_button(
-                "⬇️ Download Access_Audit.csv",
-                audit.to_csv(index=False).encode("utf-8-sig"),
-                "Access_Audit.csv", "text/csv", key="sec_audit_dl")
-        with c2:
-            audit_up = st.file_uploader(
-                "…or load an existing Access_Audit (.csv / .xlsx)",
-                type=["csv", "xlsx", "xls"], key="sec_audit_load")
-            if audit_up:
-                try:
-                    from lib.csv_loader import _require_cols
-                    loaded = read_table_upload(audit_up)
-                    _require_cols(loaded, ["Date", EMAIL, "Asset_Name",
-                                           "Permission_Level"], "Access_Audit")
-                    if "Remark" not in loaded.columns:
-                        loaded["Remark"] = ""
-                    st.session_state[P + "audit_log"] = loaded
-                    st.success(f"Loaded {len(loaded)} audit rows.")
-                    st.rerun()
-                except ValueError as e:
-                    st.error(f"⚠️ {e}")
-    else:
-        st.info("No audit entries yet. The log lives in memory — "
-                "download the CSV before closing the browser.")
+    with st.container(border=True):
+        st.subheader("📜 Audit log")
+        audit = st.session_state[P + "audit_log"]
+        if not audit.empty:
+            st.dataframe(audit, use_container_width=True)
+            c1, c2 = st.columns(2)
+            with c1:
+                st.download_button(
+                    "⬇️ Download Access_Audit.csv",
+                    audit.to_csv(index=False).encode("utf-8-sig"),
+                    "Access_Audit.csv", "text/csv", key="sec_audit_dl")
+            with c2:
+                audit_up = st.file_uploader(
+                    "…or load an existing Access_Audit (.csv / .xlsx)",
+                    type=["csv", "xlsx", "xls"], key="sec_audit_load")
+                if audit_up:
+                    try:
+                        from lib.csv_loader import _require_cols
+                        loaded = read_table_upload(audit_up)
+                        _require_cols(loaded, ["Date", EMAIL, "Asset_Name",
+                                               "Permission_Level"], "Access_Audit")
+                        if "Remark" not in loaded.columns:
+                            loaded["Remark"] = ""
+                        st.session_state[P + "audit_log"] = loaded
+                        st.success(f"Loaded {len(loaded)} audit rows.")
+                        st.rerun()
+                    except ValueError as e:
+                        st.error(f"⚠️ {e}")
+                    except Exception as e:
+                        st.error(f"⚠️ Unexpected error: {e}")
+        else:
+            st.info("No audit entries yet. The log lives in memory — "
+                    "download the CSV before closing the browser.")
 
     st.divider()
-    st.subheader("🔎 Gap Analysis")
-    g1, g2 = st.columns(2)
-    with g1:
-        gap_hr_up = st.file_uploader("Current HR List (.xlsx)", type=["xlsx", "xls"],
-                                     key="sec_gap_hr")
-    with g2:
-        gap_rules_up = st.file_uploader("Rule_Book (.csv / .xlsx)",
-                                        type=["csv", "xlsx", "xls"], key="sec_gap_rules")
+    with st.container(border=True):
+        st.subheader("🔎 Gap Analysis")
+        g1, g2 = st.columns(2)
+        with g1:
+            gap_hr_up = st.file_uploader("Current HR List (.xlsx)", type=["xlsx", "xls"],
+                                         key="sec_gap_hr")
+        with g2:
+            gap_rules_up = st.file_uploader("Rule_Book (.csv / .xlsx)",
+                                            type=["csv", "xlsx", "xls"], key="sec_gap_rules")
 
     if st.button("Run Gap Analysis", type="primary", key="sec_gap_go"):
         try:
@@ -304,18 +332,19 @@ with tab_audit:
 
     gap = st.session_state[P + "gap_res"]
     if gap:
-        missing, excess = gap
-        if not missing.empty:
-            st.error(f"🚨 **{len(missing)} Missing Required Access** — grant these:")
-            st.dataframe(missing[[EMAIL, "Asset"]], use_container_width=True)
-        else:
-            st.success("No missing access — everyone has what the rules require. ✅")
-        st.divider()
-        if not excess.empty:
-            st.warning(f"⚠️ **{len(excess)} Excess / Unknown Access** — review these grants:")
-            st.dataframe(excess[[EMAIL, "Asset"]], use_container_width=True)
-        else:
-            st.success("No excess access found. ✅")
+        with st.container(border=True):
+            missing, excess = gap
+            if not missing.empty:
+                st.error(f"🚨 **{len(missing)} Missing Required Access** — grant these:")
+                st.dataframe(missing[[EMAIL, "Asset"]], use_container_width=True)
+            else:
+                st.success("No missing access — everyone has what the rules require. ✅")
+            st.divider()
+            if not excess.empty:
+                st.warning(f"⚠️ **{len(excess)} Excess / Unknown Access** — review these grants:")
+                st.dataframe(excess[[EMAIL, "Asset"]], use_container_width=True)
+            else:
+                st.success("No excess access found. ✅")
 
 # ----------------------------------------------------- TAB 4: QUERY ---
 with tab_query:
@@ -326,60 +355,67 @@ with tab_query:
     final_q = st.session_state[P + "final_rls"]
     audit_q = st.session_state[P + "audit_log"]
     if final_q is None:
-        st.info("👆 Run **Simulate & Combine** in the Rule Engine tab first, then query here.")
+        with st.container(border=True):
+            st.subheader("Get started")
+            st.markdown(
+                "1. Go to the **🔐 Rule Engine** tab and upload your HR list and Rule_Book.\n"
+                "2. Click **▶️ Simulate & Combine**.\n"
+                "3. Return here to search effective access by user or by asset."
+            )
     else:
-        mode = st.radio("Search mode", ["By User (Email)", "By Asset"],
-                        horizontal=True, key="sec_query_mode")
-        if mode == "By User (Email)":
-            q = st.text_input("Work Email", key="sec_query_user").strip().lower()
-            if q:
-                user_rows = final_q[final_q[EMAIL].str.strip().str.lower() == q]
-                if user_rows.empty:
-                    st.warning(f"No access rows found for '{q}'. Check the email spelling.")
-                else:
-                    person = user_rows.iloc[0]
-                    st.subheader(f"👤 {person[EMAIL]} — {person[DEPT]} / {person[POS]}")
-                    st.markdown("**🏬 Assets visible (rule engine):**")
-                    st.dataframe(user_rows[[STORE_ACCESS, STORE_NAME, "Source"]]
-                                 .drop_duplicates(), use_container_width=True)
-                    st.markdown("**📊 Grants (audit register):**")
-                    granted = (audit_q[audit_q[EMAIL].str.strip().str.lower() == q]
-                               if not audit_q.empty else audit_q)
-                    if not granted.empty:
-                        st.dataframe(granted[["Date", "Asset_Name", "Permission_Level",
-                                              "Remark"]], use_container_width=True)
+        with st.container(border=True):
+            mode = st.radio("Search mode", ["By User (Email)", "By Asset"],
+                            horizontal=True, key="sec_query_mode")
+            if mode == "By User (Email)":
+                q = st.text_input("Work Email", key="sec_query_user").strip().lower()
+                if q:
+                    user_rows = final_q[final_q[EMAIL].str.strip().str.lower() == q]
+                    if user_rows.empty:
+                        st.warning(f"No access rows found for '{q}'. Check the email spelling.")
                     else:
-                        st.info("No grants logged for this user yet.")
-        else:
-            q = st.text_input("Asset code / asset name / report name",
-                              key="sec_query_asset").strip()
-            if q:
-                ql = q.lower()
-                store_hits = final_q[
-                    final_q[STORE_ACCESS].str.lower().str.contains(ql, na=False, regex=False)
-                    | final_q[STORE_NAME].str.lower().str.contains(ql, na=False, regex=False)
-                ]
-                if not store_hits.empty:
-                    st.subheader(f"🏬 Users with access to asset '{q}'")
-                    st.dataframe(store_hits[[EMAIL, DEPT, POS, STORE_ACCESS,
-                                             STORE_NAME, "Source"]]
-                                 .drop_duplicates().sort_values(EMAIL),
-                                 use_container_width=True)
-                exp_hits = final_q[final_q[REPORT_ACCESS].str.lower()
-                                   .str.contains(ql, na=False, regex=False)]
-                act_hits = (audit_q[audit_q["Asset_Name"].str.lower()
-                                    .str.contains(ql, na=False, regex=False)]
-                            if not audit_q.empty else pd.DataFrame())
-                if not exp_hits.empty or not act_hits.empty:
-                    st.subheader(f"📊 Report access for '{q}'")
-                    if not exp_hits.empty:
-                        st.markdown("*Should have (per rules):*")
-                        st.dataframe(exp_hits[[EMAIL, DEPT, POS]].drop_duplicates()
-                                     .sort_values(EMAIL), use_container_width=True)
-                    if not act_hits.empty:
-                        st.markdown("*Actually granted (audit register):*")
-                        st.dataframe(act_hits[[EMAIL, "Permission_Level", "Date", "Remark"]]
+                        person = user_rows.iloc[0]
+                        st.subheader(f"👤 {person[EMAIL]} — {person[DEPT]} / {person[POS]}")
+                        st.markdown("**🏬 Assets visible (rule engine):**")
+                        st.dataframe(user_rows[[STORE_ACCESS, STORE_NAME, "Source"]]
+                                     .drop_duplicates(), use_container_width=True)
+                        st.markdown("**📊 Grants (audit register):**")
+                        granted = (audit_q[audit_q[EMAIL].str.strip().str.lower() == q]
+                                   if not audit_q.empty else audit_q)
+                        if not granted.empty:
+                            st.dataframe(granted[["Date", "Asset_Name", "Permission_Level",
+                                                  "Remark"]], use_container_width=True)
+                        else:
+                            st.info("No grants logged for this user yet.")
+            else:
+                q = st.text_input("Asset code / asset name / report name",
+                                  key="sec_query_asset").strip()
+                if q:
+                    ql = q.lower()
+                    store_hits = final_q[
+                        final_q[STORE_ACCESS].str.lower().str.contains(ql, na=False, regex=False)
+                        | final_q[STORE_NAME].str.lower().str.contains(ql, na=False, regex=False)
+                    ]
+                    if not store_hits.empty:
+                        st.subheader(f"🏬 Users with access to asset '{q}'")
+                        st.dataframe(store_hits[[EMAIL, DEPT, POS, STORE_ACCESS,
+                                                 STORE_NAME, "Source"]]
                                      .drop_duplicates().sort_values(EMAIL),
                                      use_container_width=True)
-                if store_hits.empty and exp_hits.empty and act_hits.empty:
-                    st.warning(f"Nothing found matching '{q}'.")
+                    exp_hits = final_q[final_q[REPORT_ACCESS].str.lower()
+                                       .str.contains(ql, na=False, regex=False)]
+                    act_hits = (audit_q[audit_q["Asset_Name"].str.lower()
+                                        .str.contains(ql, na=False, regex=False)]
+                                if not audit_q.empty else pd.DataFrame())
+                    if not exp_hits.empty or not act_hits.empty:
+                        st.subheader(f"📊 Report access for '{q}'")
+                        if not exp_hits.empty:
+                            st.markdown("*Should have (per rules):*")
+                            st.dataframe(exp_hits[[EMAIL, DEPT, POS]].drop_duplicates()
+                                         .sort_values(EMAIL), use_container_width=True)
+                        if not act_hits.empty:
+                            st.markdown("*Actually granted (audit register):*")
+                            st.dataframe(act_hits[[EMAIL, "Permission_Level", "Date", "Remark"]]
+                                         .drop_duplicates().sort_values(EMAIL),
+                                         use_container_width=True)
+                    if store_hits.empty and exp_hits.empty and act_hits.empty:
+                        st.warning(f"Nothing found matching '{q}'.")

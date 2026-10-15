@@ -39,16 +39,39 @@ several tools belong together (`unified-data-studio`). Conventions:
 4. `tests/run_tests.py` must pass before commit; verify page scripts with
    Streamlit's `AppTest` headless runner when the UI changes.
 5. Registering a new tool: build it as its own top-level directory
-   (`app.py` with no `set_page_config`, a `sys.path` bootstrap so local
-   imports work standalone and via the launcher, session keys prefixed per
-   app, unique `url_path`), then add one `st.Page("../<dir>/app.py", …)`
-   line in the launcher's section dict. Existing app folders are read-only
-   — never refactor them to fit the launcher.
+   (`app.py` with a guarded `set_page_config` (see "UI polish conventions"
+   below), a `sys.path` bootstrap so local imports work standalone and via
+   the launcher, session keys prefixed per app, unique `url_path`), then
+   add one `st.Page("../<dir>/app.py", …)` line in the launcher's section
+   dict. Existing app folders are read-only — never refactor them to fit
+   the launcher.
 6. Local persistence (SQLite/JSON): keep it in `<app>/storage/` (or
    `<app>/data/`); both are gitignored along with `*.db`, `*.sqlite*`,
-   `*.csv`, `*.xlsx`, `*.parquet`. Never commit user data. The launcher's
-   sidebar can be themed with injected CSS (`st.markdown(...,
-   unsafe_allow_html=True)`), targeting `section[data-testid="stSidebar"]`.
+   `*.csv`, `*.xlsx`, `*.parquet`. Never commit user data. Large transient
+   uploads go to the OS temp dir (`tempfile`), never the repo.
+7. Sidebar theme (launcher-owned CSS, injected once via `st.markdown(...,
+   unsafe_allow_html=True)`): emojis on the 5 pillar headers only —
+   `st.Page` items use no icon. Sub-item styling targets
+   `a[data-testid="stSidebarNavLink"]` with a `::before` colored dot;
+   per-pillar accents via CSS vars on
+   `ul[data-testid="stSidebarNavItems"] > div:nth-of-type(n)` (order must
+   match the section dict); hover/active get the accent underline
+   (`border-bottom`). Global suite CSS lives here too
+   (e.g. `.block-container { padding-top: 1.8rem }`).
+
+## UI polish conventions
+
+- **Cards**: group upload/input areas, KPI metric rows, and result tables
+  in `with st.container(border=True):` — 2–5 cards per view, never one
+  giant card around the whole page.
+- **Empty states**: every view that waits for user input shows a bordered
+  onboarding card (subheader + numbered steps), never blank space or a
+  raw traceback.
+- **Standalone page config**: standalone `app.py` files (which also run
+  via the launcher) set page config defensively:
+  `try: st.set_page_config(page_title=…, page_icon=…, layout="wide")`
+  `except Exception: pass  # launcher owns page config`.
+  Suite `pages/` scripts never call it.
 
 ## New-app checklist
 

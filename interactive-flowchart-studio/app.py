@@ -26,6 +26,11 @@ try:
 except ImportError:  # pragma: no cover
     raise SystemExit("streamlit is required: pip install -r requirements.txt")
 
+try:
+    st.set_page_config(page_title="Interactive Flowchart Studio", page_icon="🔀", layout="wide")
+except Exception:
+    pass  # running inside the suite launcher — page config owned by launcher.py
+
 P = "fc8_"
 NODE_COLS = ["id", "label", "type", "desc"]
 EDGE_COLS = ["source", "target", "label"]
@@ -68,67 +73,73 @@ tab_edit, tab_preview, tab_export = st.tabs(
 # ========================================================== TAB 1 ===
 with tab_edit:
     st.subheader("Starter templates")
-    t1, t2 = st.columns(2)
-    for col, key in zip((t1, t2), ("report_access", "kpi_troubleshooting")):
-        with col:
-            tpl = core.starter_templates()[key]
-            if st.button(f"📥 Load: {tpl['name']}", key=P + f"tpl_{key}",
-                         use_container_width=True):
-                st.session_state[P + "nodes"] = pd.DataFrame(tpl["nodes"])
-                st.session_state[P + "edges"] = pd.DataFrame(tpl["edges"])
-                st.session_state[P + "title"] = tpl["name"]
-                st.rerun()
+    with st.container(border=True):
+        t1, t2 = st.columns(2)
+        for col, key in zip((t1, t2), ("report_access", "kpi_troubleshooting")):
+            with col:
+                tpl = core.starter_templates()[key]
+                if st.button(f"📥 Load: {tpl['name']}", key=P + f"tpl_{key}",
+                             use_container_width=True):
+                    st.session_state[P + "nodes"] = pd.DataFrame(tpl["nodes"])
+                    st.session_state[P + "edges"] = pd.DataFrame(tpl["edges"])
+                    st.session_state[P + "title"] = tpl["name"]
+                    st.rerun()
 
     st.subheader("Nodes")
-    st.caption("Node_Type: question = decision diamond, action = step, "
-               "end = end-state.")
-    nodes_df = st.data_editor(
-        _nodes(), num_rows="dynamic", use_container_width=True,
-        key=P + "nodes_ed",
-        column_config={
-            "id": st.column_config.TextColumn("Node_ID", required=True),
-            "label": st.column_config.TextColumn("Label", required=True),
-            "type": st.column_config.SelectboxColumn(
-                "Node_Type", options=list(core.NODE_TYPES), required=True),
-            "desc": st.column_config.TextColumn("Detailed_Description",
-                                                width="large"),
-        })
-    st.session_state[P + "nodes"] = nodes_df
+    with st.container(border=True):
+        st.caption("Node_Type: question = decision diamond, action = step, "
+                   "end = end-state.")
+        nodes_df = st.data_editor(
+            _nodes(), num_rows="dynamic", use_container_width=True,
+            key=P + "nodes_ed",
+            column_config={
+                "id": st.column_config.TextColumn("Node_ID", required=True),
+                "label": st.column_config.TextColumn("Label", required=True),
+                "type": st.column_config.SelectboxColumn(
+                    "Node_Type", options=list(core.NODE_TYPES), required=True),
+                "desc": st.column_config.TextColumn("Detailed_Description",
+                                                    width="large"),
+            })
+        st.session_state[P + "nodes"] = nodes_df
 
     st.subheader("Edges")
-    edges_df = st.data_editor(
-        _edges(), num_rows="dynamic", use_container_width=True,
-        key=P + "edges_ed",
-        column_config={
-            "source": st.column_config.TextColumn("Source_ID"),
-            "target": st.column_config.TextColumn("Target_ID"),
-            "label": st.column_config.TextColumn("Condition_Label",
-                                                 help="e.g. Yes / No / Case A"),
-        })
-    st.session_state[P + "edges"] = edges_df
+    with st.container(border=True):
+        edges_df = st.data_editor(
+            _edges(), num_rows="dynamic", use_container_width=True,
+            key=P + "edges_ed",
+            column_config={
+                "source": st.column_config.TextColumn("Source_ID"),
+                "target": st.column_config.TextColumn("Target_ID"),
+                "label": st.column_config.TextColumn("Condition_Label",
+                                                     help="e.g. Yes / No / Case A"),
+            })
+        st.session_state[P + "edges"] = edges_df
 
     st.subheader("Quick-add edge")
-    node_ids = [str(i).strip() for i in nodes_df["id"].tolist()
-                if str(i).strip()]
-    if node_ids:
-        q1, q2, q3, q4 = st.columns([2, 2, 2, 1])
-        with q1:
-            qs = st.selectbox("From", node_ids, key=P + "qe_s")
-        with q2:
-            qt = st.selectbox("To", node_ids, key=P + "qe_t")
-        with q3:
-            ql = st.text_input("Condition", key=P + "qe_l",
-                               placeholder="Yes / No / …")
-        with q4:
-            st.write("")
-            if st.button("➕ Add", key=P + "qe_add"):
-                new = pd.DataFrame([{"source": qs, "target": qt,
-                                     "label": ql}])
-                st.session_state[P + "edges"] = pd.concat(
-                    [edges_df, new], ignore_index=True)
-                st.rerun()
-    else:
-        st.info("Add nodes first.")
+    with st.container(border=True):
+        node_ids = [str(i).strip() for i in nodes_df["id"].tolist()
+                    if str(i).strip()]
+        if node_ids:
+            q1, q2, q3, q4 = st.columns([2, 2, 2, 1])
+            with q1:
+                qs = st.selectbox("From", node_ids, key=P + "qe_s")
+            with q2:
+                qt = st.selectbox("To", node_ids, key=P + "qe_t")
+            with q3:
+                ql = st.text_input("Condition", key=P + "qe_l",
+                                   placeholder="Yes / No / …")
+            with q4:
+                st.write("")
+                if st.button("➕ Add", key=P + "qe_add"):
+                    new = pd.DataFrame([{"source": qs, "target": qt,
+                                         "label": ql}])
+                    st.session_state[P + "edges"] = pd.concat(
+                        [edges_df, new], ignore_index=True)
+                    st.rerun()
+        else:
+            st.subheader("📭 No nodes yet")
+            st.markdown("Add rows to the **Nodes** table above first, "
+                        "then connect them with edges here.")
 
     nodes = _as_records(nodes_df, NODE_COLS)
     edges = [e for e in _as_records(edges_df, EDGE_COLS)
@@ -141,22 +152,26 @@ with tab_edit:
 # ========================================================== TAB 2 ===
 with tab_preview:
     st.subheader("Interactive preview")
-    st.caption("Click any node to highlight its path from the start and read "
-               "its detailed description. Click the background to reset.")
-    nodes = _as_records(st.session_state[P + "nodes"], NODE_COLS)
-    edges = [e for e in _as_records(st.session_state[P + "edges"], EDGE_COLS)
-             if e["source"] and e["target"]]
-    errors = core.validate_flow(nodes, edges)
-    if errors:
-        for err in errors:
-            st.error("⚠️ " + err)
-    elif not nodes:
-        st.info("Add nodes in the editor first.")
-    else:
-        title = st.session_state.get(P + "title", "Flowchart")
-        html_doc = core.render_viewer_html(title, nodes, edges)
-        _, sw, sh = core.layout(nodes, edges)
-        components.html(html_doc, height=min(720, sh + 220), scrolling=True)
+    with st.container(border=True):
+        st.caption("Click any node to highlight its path from the start and read "
+                   "its detailed description. Click the background to reset.")
+        nodes = _as_records(st.session_state[P + "nodes"], NODE_COLS)
+        edges = [e for e in _as_records(st.session_state[P + "edges"], EDGE_COLS)
+                 if e["source"] and e["target"]]
+        errors = core.validate_flow(nodes, edges)
+        if errors:
+            for err in errors:
+                st.error("⚠️ " + err)
+        elif not nodes:
+            st.subheader("📭 Nothing to preview yet")
+            st.markdown("1. Add **nodes** in the **📝 Node & Edge Editor** tab.\n"
+                        "2. Connect them with **edges**.\n"
+                        "3. The live interactive diagram appears here.")
+        else:
+            title = st.session_state.get(P + "title", "Flowchart")
+            html_doc = core.render_viewer_html(title, nodes, edges)
+            _, sw, sh = core.layout(nodes, edges)
+            components.html(html_doc, height=min(720, sh + 220), scrolling=True)
 
 # ========================================================== TAB 3 ===
 with tab_export:
@@ -166,29 +181,35 @@ with tab_export:
              if e["source"] and e["target"]]
     errors = core.validate_flow(nodes, edges)
     if errors:
-        for err in errors:
-            st.error("⚠️ Fix validation errors before exporting: " + err)
+        with st.container(border=True):
+            for err in errors:
+                st.error("⚠️ Fix validation errors before exporting: " + err)
     elif not nodes:
-        st.info("Nothing to export yet.")
+        with st.container(border=True):
+            st.subheader("📭 Nothing to export yet")
+            st.markdown("1. Build your flow in the **📝 Node & Edge Editor** tab.\n"
+                        "2. Fix any validation errors.\n"
+                        "3. Download the **Interactive HTML**, **Mermaid**, or **SVG** here.")
     else:
-        title = st.session_state.get(P + "title", "Flowchart")
-        stem = "".join(c if c.isalnum() else "_" for c in title).strip("_") \
-            or "flowchart"
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            st.download_button(
-                "🌐 Interactive HTML", core.render_viewer_html(
-                    title, nodes, edges),
-                f"{stem}.html", "text/html", key=P + "dl_html",
-                help="Self-contained — double-click in Chrome/Edge, no Python needed.")
-        with c2:
-            st.download_button("🧜 Mermaid (.mmd)",
-                               core.to_mermaid(nodes, edges),
-                               f"{stem}.mmd", "text/plain", key=P + "dl_mmd")
-        with c3:
-            st.download_button("🖼️ SVG (for PowerPoint)",
-                               core.to_svg(nodes, edges, title),
-                               f"{stem}.svg", "image/svg+xml",
-                               key=P + "dl_svg")
-        st.caption("PowerPoint: Insert → Pictures → this SVG (ungroup to edit "
-                   "shapes), or paste the Mermaid code into a Mermaid renderer.")
+        with st.container(border=True):
+            title = st.session_state.get(P + "title", "Flowchart")
+            stem = "".join(c if c.isalnum() else "_" for c in title).strip("_") \
+                or "flowchart"
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                st.download_button(
+                    "🌐 Interactive HTML", core.render_viewer_html(
+                        title, nodes, edges),
+                    f"{stem}.html", "text/html", key=P + "dl_html",
+                    help="Self-contained — double-click in Chrome/Edge, no Python needed.")
+            with c2:
+                st.download_button("🧜 Mermaid (.mmd)",
+                                   core.to_mermaid(nodes, edges),
+                                   f"{stem}.mmd", "text/plain", key=P + "dl_mmd")
+            with c3:
+                st.download_button("🖼️ SVG (for PowerPoint)",
+                                   core.to_svg(nodes, edges, title),
+                                   f"{stem}.svg", "image/svg+xml",
+                                   key=P + "dl_svg")
+            st.caption("PowerPoint: Insert → Pictures → this SVG (ungroup to edit "
+                       "shapes), or paste the Mermaid code into a Mermaid renderer.")

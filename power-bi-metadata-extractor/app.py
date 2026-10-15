@@ -405,7 +405,15 @@ fmt = ""
 try:
     if mode == "Upload model.bim":
         if uploaded is None:
-            st.info("👈 Upload a `.bim` or `.json` file from the sidebar to get started.")
+            with st.container(border=True):
+                st.subheader("👈 Get started — upload your model")
+                st.markdown(
+                    "1. In the sidebar, choose **Upload model.bim**.\n"
+                    "2. Click **Browse files** and pick `<report>.SemanticModel/model.bim` "
+                    "(or any exported `.json`).\n"
+                    "3. Your tables, columns and DAX measures appear below — "
+                    "parsing is 100% local, nothing is sent anywhere."
+                )
             st.stop()
         data = parse_bim(uploaded.getvalue())
         tables = extract_model_bim(data)
@@ -413,7 +421,15 @@ try:
         fmt = "model.bim (JSON)"
     else:
         if not folder_path.strip():
-            st.info("👈 Enter the PBIP project root path in the sidebar to get started.")
+            with st.container(border=True):
+                st.subheader("👈 Get started — point at your PBIP folder")
+                st.markdown(
+                    "1. In the sidebar, choose **PBIP project folder**.\n"
+                    "2. Paste your PBIP project root path (the folder containing "
+                    "`*.SemanticModel/`).\n"
+                    "3. The app auto-detects `model.bim` or `definition/tables/*.tmdl` "
+                    "and builds your Data Dictionary — parsing is 100% local."
+                )
             st.stop()
         root = Path(folder_path.strip()).expanduser()
         detected, payload = detect_pbip_format(root)
@@ -446,35 +462,38 @@ st.success(f"Parsed **{len(tables)}** table(s) from `{source_name}` ({fmt}).")
 tabs = st.tabs([t["name"] for t in tables])
 for tab, table in zip(tabs, tables):
     with tab:
-        st.subheader(f"Table: {table['name']}")
+        with st.container(border=True):
+            st.subheader(f"Table: {table['name']}")
 
-        st.markdown("**Columns**")
-        if table["columns"]:
-            st.dataframe(pd.DataFrame(table["columns"]), use_container_width=True)
-        else:
-            st.info("No columns in this table.")
+            st.markdown("**Columns**")
+            if table["columns"]:
+                st.dataframe(pd.DataFrame(table["columns"]), use_container_width=True)
+            else:
+                st.info("No columns in this table.")
 
-        st.markdown("**Measures** — full DAX shown for redundancy review")
-        if table["measures"]:
-            st.dataframe(
-                pd.DataFrame(table["measures"]),
-                use_container_width=True,
-                column_config={
-                    "Expression": st.column_config.TextColumn("Expression (DAX)", width="large"),
-                    "Description": st.column_config.TextColumn("Description", width="medium"),
-                },
-            )
-        else:
-            st.info("No measures in this table.")
+            st.markdown("**Measures** — full DAX shown for redundancy review")
+            if table["measures"]:
+                st.dataframe(
+                    pd.DataFrame(table["measures"]),
+                    use_container_width=True,
+                    column_config={
+                        "Expression": st.column_config.TextColumn("Expression (DAX)", width="large"),
+                        "Description": st.column_config.TextColumn("Description", width="medium"),
+                    },
+                )
+            else:
+                st.info("No measures in this table.")
 
 # ---- export -------------------------------------------------------------
 st.divider()
-md_text = to_markdown(tables, source_name, fmt)
-st.download_button(
-    label="⬇️ Download Data Dictionary (Markdown)",
-    data=md_text.encode("utf-8"),
-    file_name="documentation.md",
-    mime="text/markdown",
-)
-with st.expander("Preview Markdown"):
-    st.code(md_text[:6000] + ("…" if len(md_text) > 6000 else ""), language="markdown")
+with st.container(border=True):
+    st.subheader("📥 Export")
+    md_text = to_markdown(tables, source_name, fmt)
+    st.download_button(
+        label="⬇️ Download Data Dictionary (Markdown)",
+        data=md_text.encode("utf-8"),
+        file_name="documentation.md",
+        mime="text/markdown",
+    )
+    with st.expander("Preview Markdown"):
+        st.code(md_text[:6000] + ("…" if len(md_text) > 6000 else ""), language="markdown")

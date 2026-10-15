@@ -23,6 +23,11 @@ try:
 except ImportError:  # pragma: no cover
     raise SystemExit("streamlit is required: pip install -r requirements.txt")
 
+try:
+    st.set_page_config(page_title="Knowledge & Snippet Vault", page_icon="📚", layout="wide")
+except Exception:
+    pass  # running inside the suite launcher — page config owned by launcher.py
+
 P = "kv11_"
 FENCE = {"DAX": "dax", "Power Query (M)": "powerquery", "Python": "python",
          "R": "r", "SQL": "sql"}
@@ -59,15 +64,22 @@ with tab_snip:
             except ValueError as e:
                 st.error(f"⚠️ {e}")
 
-    f1, f2 = st.columns(2)
-    with f1:
-        fl = st.selectbox("Language", ["(all)"] + list(core.LANGUAGES),
-                          key=P + "fl")
-    with f2:
-        ft = st.selectbox("Tag", ["(all)"] + core.all_tags(_con()), key=P + "ft")
+    with st.container(border=True):
+        f1, f2 = st.columns(2)
+        with f1:
+            fl = st.selectbox("Language", ["(all)"] + list(core.LANGUAGES),
+                              key=P + "fl")
+        with f2:
+            ft = st.selectbox("Tag", ["(all)"] + core.all_tags(_con()), key=P + "ft")
     res = core.search(_con(), language=None if fl == "(all)" else fl,
                       tags=[] if ft == "(all)" else [ft])
     st.caption(f"{len(res['snippets'])} snippet(s).")
+    if not res["snippets"]:
+        with st.container(border=True):
+            st.subheader("📭 No snippets yet")
+            st.markdown("1. Open the **➕ Save a snippet** expander above.\n"
+                        "2. Paste your code, pick a language, add tags.\n"
+                        "3. Search and reuse it from here any time.")
     for s in res["snippets"]:
         with st.expander(f"[{s['language']}] {s['title']}"):
             if s["tags"]:
@@ -126,6 +138,12 @@ with tab_notes:
 
     res = core.search(_con())
     st.caption(f"{len(res['notes'])} note(s).")
+    if not res["notes"]:
+        with st.container(border=True):
+            st.subheader("📭 No notes yet")
+            st.markdown("1. Open the **➕ New note** expander above.\n"
+                        "2. Write Markdown — LaTeX math works (`$E=mc^2$`, `$$…$$`).\n"
+                        "3. Tag it and export a cheat sheet from the **📦 Export** tab.")
     for n in res["notes"]:
         with st.expander(n["title"]):
             if n["tags"]:
@@ -156,8 +174,9 @@ with tab_notes:
 # ========================================================== TAB 3 ===
 with tab_search:
     st.header("Instant search")
-    q = st.text_input("🔍 Full-text query", key=P + "q")
-    tsel = st.multiselect("Tags", core.all_tags(_con()), key=P + "tsel")
+    with st.container(border=True):
+        q = st.text_input("🔍 Full-text query", key=P + "q")
+        tsel = st.multiselect("Tags", core.all_tags(_con()), key=P + "tsel")
     if q.strip() or tsel:
         res = core.search(_con(), query=q, tags=tsel)
         st.subheader(f"Snippets ({len(res['snippets'])})")
@@ -170,35 +189,46 @@ with tab_search:
                 st.markdown(n["body_md"][:800]
                             + ("…" if len(n["body_md"]) > 800 else ""))
     else:
-        st.info("Type a query or pick tags.")
+        with st.container(border=True):
+            st.subheader("🔍 Start a search")
+            st.markdown("1. Type a **full-text query** above, or\n"
+                        "2. Pick one or more **tags**.\n"
+                        "3. Matching snippets and notes appear here.")
 
 # ========================================================== TAB 4 ===
 with tab_export:
     st.header("Cheat-sheet export")
     res = core.search(_con())
-    pick_s = st.multiselect(
-        "Snippets",
-        [s["id"] for s in res["snippets"]],
-        format_func=lambda i: next(
-            s["title"] + f" [{s['language']}]" for s in res["snippets"]
-            if s["id"] == i),
-        key=P + "ps")
-    pick_n = st.multiselect(
-        "Notes",
-        [n["id"] for n in res["notes"]],
-        format_func=lambda i: next(
-            n["title"] for n in res["notes"] if n["id"] == i),
-        key=P + "pn")
-    if (pick_s or pick_n) and st.button("📦 Build cheat sheet",
-                                        type="primary", key=P + "xgo"):
+    with st.container(border=True):
+        pick_s = st.multiselect(
+            "Snippets",
+            [s["id"] for s in res["snippets"]],
+            format_func=lambda i: next(
+                s["title"] + f" [{s['language']}]" for s in res["snippets"]
+                if s["id"] == i),
+            key=P + "ps")
+        pick_n = st.multiselect(
+            "Notes",
+            [n["id"] for n in res["notes"]],
+            format_func=lambda i: next(
+                n["title"] for n in res["notes"] if n["id"] == i),
+            key=P + "pn")
+    if not res["snippets"] and not res["notes"]:
+        with st.container(border=True):
+            st.subheader("📭 Nothing to export yet")
+            st.markdown("Save some **💻 Code Snippets** or **📝 Study Notes** first, "
+                        "then pick them above to build a cheat sheet.")
+    elif (pick_s or pick_n) and st.button("📦 Build cheat sheet",
+                                          type="primary", key=P + "xgo"):
         md = core.export_cheatsheet(
             [s for s in res["snippets"] if s["id"] in pick_s],
             [n for n in res["notes"] if n["id"] in pick_n])
         st.session_state[P + "sheet"] = md
     sheet = st.session_state.get(P + "sheet")
     if sheet:
-        with st.expander("Preview"):
-            st.markdown(sheet[:4000])
-        st.download_button("⬇️ Download cheat_sheet.md",
-                           sheet.encode("utf-8"), "cheat_sheet.md",
-                           "text/markdown", key=P + "xdl")
+        with st.container(border=True):
+            with st.expander("Preview"):
+                st.markdown(sheet[:4000])
+            st.download_button("⬇️ Download cheat_sheet.md",
+                               sheet.encode("utf-8"), "cheat_sheet.md",
+                               "text/markdown", key=P + "xdl")

@@ -42,9 +42,19 @@ unified-data-studio/
 └── README.md
 ```
 
-Rules: `launcher.py` owns `set_page_config` (pages must not call it);
-session-state keys are prefixed per page (`tmdl_`, `sec_`, `thu_`) because
-state is global across MPA pages; `lib/` stays Streamlit-free.
+Rules: `launcher.py` owns `set_page_config` (suite `pages/` must not call
+it; standalone `app.py` files use the guarded try/except pattern from the
+root guide); session-state keys are prefixed per page (`tmdl_`, `sec_`,
+`thu_`) because state is global across MPA pages; `lib/` stays
+Streamlit-free.
+
+**Sidebar theme** (in `launcher.py`, injected CSS): emojis on the 5 pillar
+headers only, no icons on `st.Page` items; sub-items get a `::before`
+colored dot and an accent underline on hover/active, with per-pillar
+accents (`--acc`/`--acc-soft`) assigned via
+`ul[data-testid="stSidebarNavItems"] > div:nth-of-type(n)` — keep the
+`nth-of-type` order in sync with the section dict. Global suite CSS
+(`.block-container` top padding) lives in the same style block.
 
 ## App 1 — TMDL line-surgery methodology (`lib/tmdl_io.py`)
 

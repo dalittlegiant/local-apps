@@ -24,6 +24,11 @@ try:
 except ImportError:  # pragma: no cover
     raise SystemExit("streamlit is required: pip install -r requirements.txt")
 
+try:
+    st.set_page_config(page_title="Data Quality Watchdog", page_icon="🐶", layout="wide")
+except Exception:
+    pass  # running inside the suite launcher — page config owned by launcher.py
+
 P = "dq12_"
 BADGE = {"pass": "✅ PASS", "warning": "⚠️ WARNING", "fail": "🚫 FAIL"}
 
@@ -33,19 +38,25 @@ st.caption("Validate raw files before they feed Power BI or your ETL — "
 
 # ------------------------------------------------------------ inputs
 st.header("① Load files")
-c1, c2 = st.columns(2)
-with c1:
-    cur_up = st.file_uploader("Current file *", type=["csv", "xlsx", "xls",
-                                                      "parquet"],
-                              key=P + "cur")
-with c2:
-    base_up = st.file_uploader("Baseline file (optional)", type=["csv", "xlsx",
-                                                                  "xls",
-                                                                  "parquet"],
-                               key=P + "base")
+with st.container(border=True):
+    c1, c2 = st.columns(2)
+    with c1:
+        cur_up = st.file_uploader("Current file *", type=["csv", "xlsx", "xls",
+                                                          "parquet"],
+                                  key=P + "cur")
+    with c2:
+        base_up = st.file_uploader("Baseline file (optional)", type=["csv", "xlsx",
+                                                                      "xls",
+                                                                      "parquet"],
+                                   key=P + "base")
 
 if not cur_up:
-    st.info("👆 Upload the file to validate.")
+    with st.container(border=True):
+        st.subheader("🐶 Ready to sniff your data")
+        st.markdown("1. **Upload** the CSV / Excel / Parquet file to validate.\n"
+                    "2. Optionally add a **baseline file** to flag drift.\n"
+                    "3. Configure checks, then hit **🐶 Run health checks**.\n\n"
+                    "Everything runs 100% locally — your file never leaves this machine.")
     st.stop()
 
 try:
@@ -67,24 +78,25 @@ if base_up:
 
 # ------------------------------------------------------------ options
 st.header("② Check configuration")
-o1, o2 = st.columns(2)
-with o1:
-    pk_cols = st.multiselect("Primary key column(s)", list(df.columns),
-                             key=P + "pk")
-    required_raw = st.text_area("Required columns (one per line)",
-                                key=P + "req")
-    null_thr = st.slider("Null-spike threshold %", 1, 50, 10, key=P + "null")
-with o2:
-    metric_cols = st.multiselect("Key metric columns (for sums)",
-                                 [c for c in df.columns
-                                  if pd.api.types.is_numeric_dtype(df[c])],
-                                 key=P + "metrics")
-    cat_cols = st.multiselect("Category columns (distinct counts)",
-                              list(df.columns), key=P + "cats")
-    outlier_method = st.radio("Outlier method", ("IQR", "Z-score"),
-                              horizontal=True, key=P + "om")
-    z_thr = st.slider("Z-score threshold", 2.0, 5.0, 3.0, key=P + "z")
-    base_thr = st.slider("Baseline delta alert %", 1, 50, 10, key=P + "bthr")
+with st.container(border=True):
+    o1, o2 = st.columns(2)
+    with o1:
+        pk_cols = st.multiselect("Primary key column(s)", list(df.columns),
+                                 key=P + "pk")
+        required_raw = st.text_area("Required columns (one per line)",
+                                    key=P + "req")
+        null_thr = st.slider("Null-spike threshold %", 1, 50, 10, key=P + "null")
+    with o2:
+        metric_cols = st.multiselect("Key metric columns (for sums)",
+                                     [c for c in df.columns
+                                      if pd.api.types.is_numeric_dtype(df[c])],
+                                     key=P + "metrics")
+        cat_cols = st.multiselect("Category columns (distinct counts)",
+                                  list(df.columns), key=P + "cats")
+        outlier_method = st.radio("Outlier method", ("IQR", "Z-score"),
+                                  horizontal=True, key=P + "om")
+        z_thr = st.slider("Z-score threshold", 2.0, 5.0, 3.0, key=P + "z")
+        base_thr = st.slider("Baseline delta alert %", 1, 50, 10, key=P + "bthr")
 
 opts = {"pk_cols": pk_cols,
         "required_cols": [c.strip() for c in required_raw.splitlines()
@@ -105,43 +117,46 @@ if st.button("🐶 Run health checks", type="primary", key=P + "go"):
 
 res = st.session_state.get(P + "result")
 if res:
-    checks, flags = res
-    overall = core.overall_status(checks, flags)
-    if overall == "pass":
-        st.success("## ✅ PASS — file looks healthy.")
-    elif overall == "warning":
-        st.warning("## ⚠️ WARNING — review the flagged items below.")
-    else:
-        st.error("## 🚫 FAIL — fix the failed checks before refresh.")
-
-    st.subheader("Health checks")
-    for name, c in checks.items():
-        with st.expander(f"{BADGE[c['status']]} — {name}"):
-            st.write(c["summary"])
-            if c["exceptions"] is not None and not c["exceptions"].empty:
-                st.dataframe(c["exceptions"].head(200),
-                             use_container_width=True)
-                st.caption(f"{len(c['exceptions'])} exception row(s).")
-
-    if base_df is not None:
-        st.subheader("Baseline comparison")
-        if not flags:
-            st.success("No significant drift vs baseline. ✅")
+    with st.container(border=True):
+        checks, flags = res
+        overall = core.overall_status(checks, flags)
+        if overall == "pass":
+            st.success("## ✅ PASS — file looks healthy.")
+        elif overall == "warning":
+            st.warning("## ⚠️ WARNING — review the flagged items below.")
         else:
-            for f in flags:
-                icon = "🚫" if f["status"] == "fail" else "⚠️"
-                d = (f"{f['delta_pct']:+.1f}%" if f["delta_pct"] is not None
-                     else f["note"])
-                st.write(f"{icon} **{f['metric']}**: {f['baseline']:,} → "
-                         f"{f['current']:,} ({d})")
+            st.error("## 🚫 FAIL — fix the failed checks before refresh.")
+
+        st.subheader("Health checks")
+        for name, c in checks.items():
+            with st.expander(f"{BADGE[c['status']]} — {name}"):
+                st.write(c["summary"])
+                if c["exceptions"] is not None and not c["exceptions"].empty:
+                    st.dataframe(c["exceptions"].head(200),
+                                 use_container_width=True)
+                    st.caption(f"{len(c['exceptions'])} exception row(s).")
+
+        if base_df is not None:
+            st.subheader("Baseline comparison")
+            if not flags:
+                st.success("No significant drift vs baseline. ✅")
+            else:
+                for f in flags:
+                    icon = "🚫" if f["status"] == "fail" else "⚠️"
+                    d = (f"{f['delta_pct']:+.1f}%" if f["delta_pct"] is not None
+                         else f["note"])
+                    st.write(f"{icon} **{f['metric']}**: {f['baseline']:,} → "
+                             f"{f['current']:,} ({d})")
 
     exc = core.exceptions_frame(checks)
     if not exc.empty:
-        st.subheader(f"Exception rows ({len(exc)})")
-        st.dataframe(exc.head(500), use_container_width=True)
-        st.download_button("⬇️ Download exceptions CSV",
-                           exc.to_csv(index=False).encode("utf-8-sig"),
-                           "dq_exceptions.csv", "text/csv",
-                           key=P + "dl_exc")
+        with st.container(border=True):
+            st.subheader(f"Exception rows ({len(exc)})")
+            st.dataframe(exc.head(500), use_container_width=True)
+            st.download_button("⬇️ Download exceptions CSV",
+                               exc.to_csv(index=False).encode("utf-8-sig"),
+                               "dq_exceptions.csv", "text/csv",
+                               key=P + "dl_exc")
     else:
-        st.success("No exception rows — nothing to fix. 🎉")
+        with st.container(border=True):
+            st.success("No exception rows — nothing to fix. 🎉")
