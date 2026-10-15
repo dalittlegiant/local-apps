@@ -2,3 +2,14 @@ __pycache__/
 *.pyc
 .venv/
 venv/
+
+# Phase 3 privacy: local app data must never be committed
+*.db
+*.sqlite
+*.sqlite3
+*.csv
+*.xlsx
+*.xls
+*.parquet
+data/
+storage/
