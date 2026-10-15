@@ -145,6 +145,12 @@ exec(pure, ns)
 Cover at minimum: happy path, empty input, malformed input, encoding edge
 cases, and every warning branch. Then `python3 -m py_compile app.py`.
 
+**Test-environment pitfalls (shared):**
+- pandas 3.x infers text columns as `str` dtype, not `object` — detect text
+  with `pandas.api.types.is_string_dtype`, never `dtype == 'object'`.
+- Some openpyxl builds have a broken `ws.merged_cell_ranges` property —
+  always read merged ranges via `ws.merged_cells.ranges`.
+
 ## Git workflow
 
 - Commit per app: `<slug> vN: <what changed>` (e.g. `Command Center v3: ...`).
