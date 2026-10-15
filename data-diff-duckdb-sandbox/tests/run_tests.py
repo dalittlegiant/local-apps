@@ -1,0 +1,126 @@
+"""Tests for data-diff-duckdb-sandbox/diff_core.py. No Streamlit needed.
+
+Run:  python3 tests/run_tests.py   (from the app directory)
+"""
+
+import io
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+import duckdb  # noqa: E402
+import pandas as pd  # noqa: E402
+
+import diff_core as core  # noqa: E402
+
+passed = 0
+
+
+def check(name, cond, detail=""):
+    global passed
+    if not cond:
+        print(f"FAIL: {name} {detail}")
+        sys.exit(1)
+    passed += 1
+    print(f"ok: {name}")
+
+
+# --- loading ----------------------------------------------------------
+df_csv = core.load_upload("a.csv", "x,y\n1,2\n3,\n".encode())
+check("csv load", list(df_csv.columns) == ["x", "y"] and len(df_csv) == 2)
+
+buf = io.BytesIO()
+pd.DataFrame({"a": [1, 2]}).to_parquet(buf, index=False)
+df_pq = core.load_upload("a.parquet", buf.getvalue())
+check("parquet load", df_pq["a"].tolist() == [1, 2])
+
+try:
+    core.load_upload("a.txt", b"hello")
+    check("unsupported type rejected", False)
+except ValueError:
+    check("unsupported type rejected", True)
+
+check("table name sanitize",
+      core.sanitize_table_name("My Report (2024).xlsx") == "my_report_2024")
+check("table name digit prefix", core.sanitize_table_name("2024.csv") == "t_2024")
+
+# --- profiling ---------------------------------------------------------
+prof = core.profile_df(pd.DataFrame({"a": [1, None, 3], "b": ["x", "y", "z"]}))
+check("null pct", prof["columns"][0]["null_pct"] == round(1 / 3 * 100, 2))
+check("memory counted", prof["memory_bytes"] > 0)
+pf = core.profile_frame(prof)
+check("profile frame cols", list(pf.columns)[:3] == ["column", "dtype", "null_count"])
+
+# --- sql ----------------------------------------------------------------
+con = duckdb.connect()
+con.register("t", pd.DataFrame({"a": [1, 2, 3]}))
+res = core.run_sql(con, "SELECT SUM(a) AS s FROM t")
+check("sql runs", res["s"].iloc[0] == 6)
+try:
+    core.run_sql(con, "SELECT * FROM nope")
+    check("bad sql raises", False)
+except ValueError as e:
+    check("bad sql raises", "SQL error" in str(e))
+
+# --- diff ----------------------------------------------------------------
+old = pd.DataFrame([
+    {"id": 1, "name": "Amy", "amt": 10.0, "gone_col": "x"},
+    {"id": 2, "name": "Bob", "amt": 20.0, "gone_col": "y"},
+    {"id": 3, "name": "Cat", "amt": 30.0, "gone_col": "z"},
+])
+new = pd.DataFrame([
+    {"id": 2, "name": "Bob", "amt": 25.0, "new_col": 1},   # amt changed
+    {"id": 3, "name": "Cat", "amt": 30.0, "new_col": 2},   # unchanged
+    {"id": 4, "name": "Dan", "amt": 40.0, "new_col": 3},   # added
+])
+d = core.diff_datasets(old, new, ["id"])
+check("added rows", d["added"]["id"].tolist() == [4])
+check("deleted rows", d["deleted"]["id"].tolist() == [1])
+cc = d["changed_cells"]
+check("changed cell detected",
+      len(cc) == 1 and cc.iloc[0]["column"] == "amt"
+      and cc.iloc[0]["old_value"] == 20.0 and cc.iloc[0]["new_value"] == 25.0
+      and cc.iloc[0]["id"] == "2")
+sch = d["schema"]
+check("schema removed col", ((sch["column"] == "gone_col")
+                             & (sch["status"] == "removed")).any())
+check("schema added col", ((sch["column"] == "new_col")
+                           & (sch["status"] == "added")).any())
+check("summary counts", d["summary"]["added"] == 1
+      and d["summary"]["deleted"] == 1 and d["summary"]["changed_cells"] == 1)
+
+# dtype change flagged
+old2 = pd.DataFrame({"id": [1], "v": [1]})
+new2 = pd.DataFrame({"id": [1], "v": ["one"]})
+d2 = core.diff_datasets(old2, new2, ["id"])
+check("dtype change flagged",
+      ((d2["schema"]["column"] == "v")
+       & (d2["schema"]["status"] == "dtype changed")).any())
+
+# int vs str keys still join
+old3 = pd.DataFrame({"id": [1, 2], "v": ["a", "b"]})
+new3 = pd.DataFrame({"id": ["1", "2"], "v": ["a", "CHANGED"]})
+d3 = core.diff_datasets(old3, new3, ["id"])
+check("int/str key compat",
+      d3["summary"]["added"] == 0 and d3["summary"]["changed_cells"] == 1)
+
+# duplicate keys warn
+d4 = core.diff_datasets(pd.DataFrame({"id": [1, 1], "v": ["a", "b"]}),
+                        pd.DataFrame({"id": [1], "v": ["a"]}), ["id"])
+check("dup key warning", any("duplicate" in w for w in d4["warnings"]))
+
+# no keys -> error
+try:
+    core.diff_datasets(old, new, [])
+    check("empty keys rejected", False)
+except ValueError:
+    check("empty keys rejected", True)
+
+# NaN == NaN is not a change
+o5 = pd.DataFrame({"id": [1], "v": [None]})
+n5 = pd.DataFrame({"id": [1], "v": [None]})
+check("nan==nan no change",
+      core.diff_datasets(o5, n5, ["id"])["summary"]["changed_cells"] == 0)
+
+print(f"\nAll {passed} checks passed.")
