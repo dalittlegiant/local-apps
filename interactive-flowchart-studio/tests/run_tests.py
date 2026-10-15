@@ -290,4 +290,65 @@ svg_fs = core.to_svg(nodes, edges, "T", sizes=core.node_boxes(nodes),
                      title_fs=16)
 check("static svg font size", 'font-size="16"' in svg_fs)
 
+# --- security sanitizer / CSP / dual-format ----------------------------------------------
+check("csp policy text", core.DEFAULT_CSP == "default-src 'none'; "
+      "img-src 'self' data: blob: https:; style-src 'self' 'unsafe-inline'; "
+      "script-src 'unsafe-inline'; font-src 'self' data:; connect-src 'none'; "
+      "frame-ancestors 'self' *;")
+audit_clean = core.audit_html_security(
+    core.render_viewer_html("T", nodes, edges))
+check("audit clean viewer", audit_clean["passed"]
+      and not audit_clean["findings"])
+audit_wrap = core.audit_html_security(
+    core.wrap_sharepoint_html("<div class='ai-widget'>x</div>", "t"))
+check("audit clean wrapper", audit_wrap["passed"])
+evil = ('<html><head></head><body>\n'
+        '<script src="https://cdn.example.com/lib.js"></script>\n'
+        '<link rel="stylesheet" href="http://cdn.example.com/x.css">\n'
+        '<style>@import url("https://cdn.example.com/i.css");</style>\n'
+        '<script>fetch("https://evil.com");eval("x");'
+        'var f=new Function("a");var x=new XMLHttpRequest();'
+        'navigator.sendBeacon("/l");var w=new WebSocket("ws://e");</script>\n'
+        '<a href="https://x.com" target="_blank">hi</a>\n'
+        '</body></html>')
+audit_evil = core.audit_html_security(evil)
+check("audit flags evil", not audit_evil["passed"])
+kinds = {f["kind"] for f in audit_evil["findings"]}
+check("audit kinds", kinds == {"external-script", "external-stylesheet",
+                               "network-call", "unsafe-sink"})
+check("audit line + url",
+      any(f["line"] == 2 and "cdn.example.com/lib.js" in f["detail"]
+          for f in audit_evil["findings"]))
+check("audit import flagged",
+      any(f["kind"] == "external-stylesheet" and "i.css" in f["detail"]
+          for f in audit_evil["findings"]))
+check("audit empty passes", core.audit_html_security("")["passed"])
+csp_doc = core.inject_csp("<html><head><title>t</title></head>"
+                          "<body>x</body></html>")
+check("csp injected in head",
+      '<meta http-equiv="Content-Security-Policy"' in csp_doc
+      and "connect-src 'none'" in csp_doc
+      and csp_doc.index("Content-Security-Policy") > csp_doc.index("<head>"))
+check("csp exact policy", f'content="{core.DEFAULT_CSP}"' in csp_doc)
+check("csp replaced not duplicated",
+      core.inject_csp(csp_doc).count(
+          'http-equiv="Content-Security-Policy"') == 1)
+check("csp no-head fallback",
+      "Content-Security-Policy" in core.inject_csp("<p>hi</p>"))
+link_doc = core.sanitize_target_blank(
+    '<a href="https://x.com" target="_blank">hi</a>')
+check("tabnabbing fixed", 'rel="noopener noreferrer"' in link_doc)
+check("tabnabbing untouched",
+      "rel=" not in core.sanitize_target_blank(
+          '<a href="/" target="_self">x</a>'))
+check("tabnabbing merges",
+      'rel="noopener noreferrer"' in core.sanitize_target_blank(
+          '<a href="https://x.com" target="_blank" rel="noopener">x</a>'))
+safe = core.sanitize_export(evil, use_csp=True)
+check("sanitize_export", "Content-Security-Policy" in safe
+      and 'rel="noopener noreferrer"' in safe)
+safe_nc = core.sanitize_export(evil, use_csp=False)
+check("sanitize_export no csp", "Content-Security-Policy" not in safe_nc
+      and 'rel="noopener noreferrer"' in safe_nc)
+
 print(f"\nAll {passed} checks passed.")

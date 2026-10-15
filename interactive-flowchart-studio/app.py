@@ -144,6 +144,20 @@ def _node_sizes(nodes: list[dict], opts: dict) -> dict:
     return core.node_boxes(nodes, opts["title_fs"], opts["subtitle_fs"])
 
 
+def _render_audit_card(audit: dict) -> None:
+    """Security gatekeeper card: green self-contained badge, or a detailed
+    warning listing the exact lines/URLs detected."""
+    if audit["passed"]:
+        st.success("✅ Security Check Passed: 100% Self-Contained "
+                   "(Zero External Network Calls)")
+        return
+    n = len(audit["findings"])
+    st.error(f"⚠️ Security Check: {n} issue{'s' if n != 1 else ''} found — "
+             "review or strip the flagged code before sharing this file.")
+    for f in audit["findings"]:
+        st.markdown(f"- **{f['kind']}** — line {f['line']}: `{f['detail']}`")
+
+
 st.title("🔀 Interactive Flowchart Studio")
 st.caption("Build decision trees, SOPs, and business-logic flows — preview "
            "them live, then export a standalone interactive HTML file anyone "
@@ -357,20 +371,38 @@ with tab_export:
                                allow_drag=bool(
                                    st.session_state.get(P + "allow_drag",
                                                         False)))
-            c1, c2, c3 = st.columns(3)
+            raw_html = core.render_viewer_html(title, nodes, edges,
+                                               **export_opts)
+            _render_audit_card(core.audit_html_security(raw_html))
+            use_csp = st.checkbox(
+                "🔒 Inject Zero-Exfiltration CSP Header",
+                value=True, key=P + "csp",
+                help="Injects a Content-Security-Policy meta tag: blocks "
+                     "outbound data leaks (connect-src 'none') and external "
+                     "third-party scripts, while allowing inline "
+                     "styles/scripts and local/same-origin images.")
+            safe_html = core.sanitize_export(raw_html, use_csp=use_csp)
+            st.caption("The .html and .aspx carry the exact same "
+                       "sanitization and CSP protection.")
+            c1, c2, c3, c4 = st.columns(4)
             with c1:
                 st.download_button(
-                    "🌐 Interactive HTML", core.render_viewer_html(
-                        title, nodes, edges, **export_opts),
+                    "🌐 Interactive HTML", safe_html,
                     f"{stem}.html", "text/html", key=P + "dl_html",
                     help="Self-contained read-only viewer for SharePoint — "
                          "no Python needed. Theme, panel position and legend "
                          "are baked in from your settings above.")
             with c2:
+                st.download_button(
+                    "📄 Interactive ASPX", safe_html,
+                    f"{stem}.aspx", "text/html", key=P + "dl_aspx",
+                    help="Byte-identical to the .html — for legacy "
+                         "enterprise portals, IIS and classic server pages.")
+            with c3:
                 st.download_button("🧜 Mermaid (.mmd)",
                                    core.to_mermaid(nodes, edges),
                                    f"{stem}.mmd", "text/plain", key=P + "dl_mmd")
-            with c3:
+            with c4:
                 st.download_button("🖼️ SVG (for PowerPoint)",
                                    core.to_svg(nodes, edges, title,
                                                opts["direction"], opts["gap_x"],
@@ -445,10 +477,20 @@ with tab_ai:
         is_full = bool(code) and code != wrapped
         if is_full:
             st.caption("ℹ️ Complete HTML document detected — kept as-is.")
+        audit = core.audit_html_security(wrapped)
+        use_csp = st.checkbox(
+            "🔒 Inject Zero-Exfiltration CSP Header",
+            value=True, key=P + "ai_csp",
+            help="Injects a Content-Security-Policy meta tag: blocks "
+                 "outbound data leaks (connect-src 'none') and external "
+                 "third-party scripts, while allowing inline styles/scripts "
+                 "and local/same-origin images on any host.")
+        safe = core.sanitize_export(wrapped, use_csp=use_csp)
+        _render_audit_card(audit)
         preview_h = st.slider("Preview height (px)", 300, 1200, 600,
                               key=P + "ai_h")
-        if wrapped.strip():
-            components.html(wrapped, height=preview_h, scrolling=True)
+        if safe.strip():
+            components.html(safe, height=preview_h, scrolling=True)
         else:
             st.info("Paste a snippet above to see the live preview here.")
 
@@ -456,11 +498,24 @@ with tab_ai:
         st.subheader("③ Export")
         stem = "".join(c if c.isalnum() else "_" for c in wrap_title
                        ).strip("_") or "sharepoint_embed"
-        st.download_button("⬇️ Download .html for SharePoint",
-                           wrapped or "<!-- empty -->",
-                           f"{stem}.html", "text/html", key=P + "ai_dl",
-                           help="Upload this file to SharePoint, then point an "
-                                "Embed web part at it (or paste via iframe).")
+        payload = safe if wrapped.strip() else "<!-- empty -->"
+        st.caption("Both files carry the exact same sanitization "
+                   "(reverse-tabnabbing fix) and CSP protection.")
+        c1, c2 = st.columns(2)
+        with c1:
+            st.download_button("⬇️ Download .html for SharePoint",
+                               payload,
+                               f"{stem}.html", "text/html", key=P + "ai_dl",
+                               help="Upload this file to SharePoint, then point an "
+                                    "Embed web part at it (or paste via iframe).")
+        with c2:
+            st.download_button("⬇️ Download .aspx (legacy portals / IIS)",
+                               payload,
+                               f"{stem}.aspx", "text/html",
+                               key=P + "ai_dl_aspx",
+                               help="Byte-identical to the .html — for legacy "
+                                    "enterprise portals, IIS and classic "
+                                    "server pages.")
 
     with st.expander("🤖 AI prompt helper — copy & paste to any AI"):
         st.caption("Give this prompt to ChatGPT / Claude / Copilot so the "

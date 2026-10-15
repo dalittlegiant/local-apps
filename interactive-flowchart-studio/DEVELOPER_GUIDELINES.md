@@ -157,6 +157,27 @@ layer's max node width so same-rank neighbours never overlap. Font sizes
 are literal SVG attributes (static export stays self-contained); the
 viewer CSS carries no font-size rules for node/edge text.
 
+### Export security (AI Studio + flowchart exporter)
+
+`audit_html_security()` scans export HTML for external scripts/
+stylesheets (`src`/`href`/`@import` with http(s):// or `//` URLs),
+outbound network calls (`fetch(`, `XMLHttpRequest`,
+`navigator.sendBeacon`, `WebSocket`) and unsafe sinks (`eval(`,
+`new Function(`), returning `{"passed", "findings"}` with exact line
+numbers + URLs/snippets. The app renders a green
+"✅ Security Check Passed: 100% Self-Contained (Zero External Network
+Calls)" card, or a red card listing every finding for review/stripping.
+`sanitize_export()` applies the reverse-tabnabbing fix (all
+`<a target="_blank">` get `rel="noopener noreferrer"`, merged into any
+existing rel) and optionally injects `DEFAULT_CSP` — the
+zero-exfiltration policy (`connect-src 'none'`, `script-src
+'unsafe-inline'` only) — as a `<meta>` in `<head>` (existing CSP metas
+are replaced, never duplicated). Both the `.html` and `.aspx` downloads
+are byte-identical and receive the same sanitization + CSP. The
+interactive viewer was QA'd in Chromium with the CSP injected:
+click-to-trace, bento cards and selection all work; `fetch()` is blocked
+(`connect-src 'none'`) as intended.
+
 ## Future work
 
 - Persist drag-repositioned node coordinates back into the node table

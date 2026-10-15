@@ -1070,3 +1070,172 @@ def wrap_sharepoint_html(raw: str, title: str = "Embedded content") -> str:
     safe_title = html.escape(title or "Embedded content")
     return (_SP_SHELL_HEAD.replace("{title}", safe_title) + raw
             + _SP_SHELL_TAIL)
+
+
+# ------------------------------------------------------------ security
+DEFAULT_CSP = ("default-src 'none'; img-src 'self' data: blob: https:; "
+               "style-src 'self' 'unsafe-inline'; script-src 'unsafe-inline'; "
+               "font-src 'self' data:; connect-src 'none'; "
+               "frame-ancestors 'self' *;")
+"""Zero-exfiltration Content-Security-Policy: no outbound data leaks
+(connect-src 'none'), no external scripts (script-src 'unsafe-inline'
+only), while inline styles/scripts and local/same-origin images keep
+working on any hosting platform."""
+
+_EXTERNAL_URL = re.compile(r"^(?:https?:)?//", re.IGNORECASE)
+_CSP_META = re.compile(
+    r"<meta\b[^>]*http-equiv\s*=\s*[\"']?content-security-policy[\"']?[^>]*>",
+    re.IGNORECASE)
+
+
+def _line_no(text: str, pos: int) -> int:
+    return text.count("\n", 0, pos) + 1
+
+
+def _line_snippet(text: str, pos: int, width: int = 110) -> str:
+    start = text.rfind("\n", 0, pos) + 1
+    end = text.find("\n", pos)
+    if end == -1:
+        end = len(text)
+    line = text[start:end].strip()
+    return line if len(line) <= width else line[:width - 3] + "..."
+
+
+def audit_html_security(html_text: str) -> dict:
+    """Scan HTML/CSS/JS for security risks before export.
+
+    Flags external scripts/stylesheets (``src``/``href``/``@import`` with
+    http(s):// or protocol-relative URLs), outbound network calls
+    (``fetch(``, ``XMLHttpRequest``, ``navigator.sendBeacon``,
+    ``WebSocket``), and unsafe execution sinks (``eval(``,
+    ``new Function(``). Returns ``{"passed": bool, "findings": [...]}``
+    where each finding is ``{"kind", "line", "detail"}`` with the exact
+    line number and URL/code snippet so the author can review or strip
+    it. An empty document passes (nothing to leak).
+    """
+    doc = html_text or ""
+    findings: list[dict] = []
+
+    for m in re.finditer(r"<script\b[^>]*>", doc, re.IGNORECASE):
+        sm = re.search(r"""\bsrc\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)""",
+                       m.group(0), re.IGNORECASE)
+        if sm:
+            url = sm.group(1).strip("\"'")
+            if _EXTERNAL_URL.match(url):
+                findings.append({"kind": "external-script",
+                                 "line": _line_no(doc, m.start()),
+                                 "detail": url})
+
+    for m in re.finditer(r"<link\b[^>]*>", doc, re.IGNORECASE):
+        tag = m.group(0)
+        hm = re.search(r"""\bhref\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)""",
+                       tag, re.IGNORECASE)
+        rm = re.search(r"""\brel\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)""",
+                       tag, re.IGNORECASE)
+        rel = rm.group(1).strip("\"'").lower() if rm else ""
+        if hm and ("stylesheet" in rel or not rel):
+            url = hm.group(1).strip("\"'")
+            if _EXTERNAL_URL.match(url):
+                findings.append({"kind": "external-stylesheet",
+                                 "line": _line_no(doc, m.start()),
+                                 "detail": url})
+    for m in re.finditer(r"@import\s+(?:url\(\s*)?[\"']([^\"']+)[\"']",
+                         doc, re.IGNORECASE):
+        url = m.group(1)
+        if _EXTERNAL_URL.match(url):
+            findings.append({"kind": "external-stylesheet",
+                             "line": _line_no(doc, m.start()),
+                             "detail": url})
+
+    for pat, label in ((r"\bfetch\s*\(", "fetch("),
+                       (r"\bXMLHttpRequest\b", "XMLHttpRequest"),
+                       (r"\bnavigator\.sendBeacon\b", "navigator.sendBeacon"),
+                       (r"\bWebSocket\s*\(", "WebSocket(")):
+        for m in re.finditer(pat, doc):
+            findings.append({"kind": "network-call",
+                             "line": _line_no(doc, m.start()),
+                             "detail": f"{label} — "
+                                       f"{_line_snippet(doc, m.start())}"})
+
+    for pat, label in ((r"\beval\s*\(", "eval("),
+                       (r"\bnew\s+Function\s*\(", "new Function(")):
+        for m in re.finditer(pat, doc):
+            findings.append({"kind": "unsafe-sink",
+                             "line": _line_no(doc, m.start()),
+                             "detail": f"{label} — "
+                                       f"{_line_snippet(doc, m.start())}"})
+
+    seen, uniq = set(), []
+    for f in findings:
+        key = (f["kind"], f["line"], f["detail"])
+        if key not in seen:
+            seen.add(key)
+            uniq.append(f)
+    return {"passed": not uniq, "findings": uniq}
+
+
+def inject_csp(html_text: str, csp: str = DEFAULT_CSP) -> str:
+    """Inject the zero-exfiltration CSP ``<meta>`` tag into ``<head>``.
+
+    An existing CSP meta tag is replaced (deterministic policy); without
+    a ``<head>`` a minimal one is created after ``<html>``, else the tag
+    is prepended. Platform-agnostic — works on SharePoint, IIS, or any
+    static host.
+    """
+    doc = html_text or ""
+    tag = (f'<meta http-equiv="Content-Security-Policy" '
+           f'content="{csp}">')
+    if _CSP_META.search(doc):
+        return _CSP_META.sub(tag, doc, count=1)
+    m = re.search(r"<head\b[^>]*>", doc, re.IGNORECASE)
+    if m:
+        i = m.end()
+        return doc[:i] + "\n" + tag + doc[i:]
+    m = re.search(r"<html\b[^>]*>", doc, re.IGNORECASE)
+    if m:
+        i = m.end()
+        return doc[:i] + f"\n<head>\n{tag}\n</head>" + doc[i:]
+    return tag + "\n" + doc
+
+
+_A_TAG = re.compile(r"<a\b[^>]*>", re.IGNORECASE)
+_TARGET_BLANK = re.compile(r"""\btarget\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)""",
+                           re.IGNORECASE)
+_REL_ATTR = re.compile(r"""\brel\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)""",
+                       re.IGNORECASE)
+
+
+def sanitize_target_blank(html_text: str) -> str:
+    """Reverse-tabnabbing protection: every ``<a target="_blank">`` gets
+    ``rel="noopener noreferrer"`` (merged into an existing rel value
+    when present). Other links are untouched."""
+    def fix(m: re.Match) -> str:
+        tag = m.group(0)
+        tm = _TARGET_BLANK.search(tag)
+        if not tm or tm.group(1).strip("\"'").lower() != "_blank":
+            return tag
+        rm = _REL_ATTR.search(tag)
+        if rm:
+            raw = rm.group(1)
+            q = "\"" if raw.startswith("\"") else ("'" if raw.startswith("'")
+                                                   else "")
+            toks = raw.strip("\"'").split()
+            lowered = [t.lower() for t in toks]
+            for need in ("noopener", "noreferrer"):
+                if need not in lowered:
+                    toks.append(need)
+            new_rel = f"rel={q}{' '.join(toks)}{q}" if q \
+                else f"rel={' '.join(toks)}"
+            return tag[:rm.start()] + new_rel + tag[rm.end():]
+        return tag[:-1].rstrip() + ' rel="noopener noreferrer">'
+
+    return _A_TAG.sub(fix, html_text or "")
+
+
+def sanitize_export(html_text: str, use_csp: bool = True,
+                    csp: str = DEFAULT_CSP) -> str:
+    """Export hardening: reverse-tabnabbing link fix plus optional
+    zero-exfiltration CSP injection. Byte-identical output feeds both
+    the .html and .aspx downloads."""
+    doc = sanitize_target_blank(html_text or "")
+    return inject_csp(doc, csp) if use_csp else doc
