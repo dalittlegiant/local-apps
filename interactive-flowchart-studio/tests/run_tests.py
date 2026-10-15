@@ -225,4 +225,69 @@ check("wrapper title escaped",
       "&lt;b&gt;" in core.wrap_sharepoint_html("<p>x</p>", "<b>evil</b>"))
 check("wrapper empty safe", "<!DOCTYPE html>" in core.wrap_sharepoint_html(""))
 
+# --- auto-fit node boxes ---------------------------------------------------------------
+box_short = core.node_box({"id": "a", "label": "OK"})
+check("box min width", box_short["w"] == 180 and box_short["h"] == 64)
+box_long = core.node_box({"id": "b", "label": "This is a deliberately long node title that should widen the pill"})
+check("box widens", 180 < box_long["w"] <= 380)
+box_huge = core.node_box({"id": "c", "label": "Supercalifragilisticexpialidocious " * 6})
+check("box wraps + grows", len(box_huge["tl"]) > 1 and box_huge["h"] > 64
+      and box_huge["w"] <= 380)
+box_ascii = core.node_box({"id": "d", "label": "aaaaaaaaaa"})
+box_cjk = core.node_box({"id": "e", "label": "\u4e2d" * 10})
+check("CJK 1.8x width", box_cjk["w"] > box_ascii["w"])
+boxes = core.node_boxes([{"id": "a", "label": "OK"},
+                         {"id": "e", "label": "\u4e2d" * 10}])
+check("node_boxes map", set(boxes) == {"a", "e"} and "tl" in boxes["e"])
+check("node_boxes skips blank id",
+      core.node_boxes([{"id": ""}, {"id": "  "}]) == {})
+
+# variable-width layout: same-rank neighbours never overlap
+wn = [{"id": "r", "label": "Root"},
+      {"id": "x", "label": "A very long label that forces the pill wide"},
+      {"id": "y", "label": "Y"}]
+we = [{"source": "r", "target": "x"}, {"source": "r", "target": "y"}]
+wsizes = core.node_boxes(wn)
+pos_w, _, _ = core.layout(wn, we, "LR", sizes=wsizes)
+check("wide layer pushes next out",
+      pos_w["x"][0] >= pos_w["r"][0] + wsizes["r"]["w"] + core.GAP_X
+      or pos_w["y"][0] >= pos_w["r"][0] + wsizes["r"]["w"] + core.GAP_X)
+
+# --- font-size params ------------------------------------------------------------------
+doc_fs = core.render_viewer_html("T", nodes, edges, title_fs=16, edge_fs=14,
+                                 show_toolbar=False, allow_drag=False,
+                                 sizes=core.node_boxes(nodes))
+check("title font-size attr", 'font-size="16"' in doc_fs)
+check("edge font-size attr", 'font-size="14"' in doc_fs)
+check("panel body font-size",
+      'id="bentoGrid" style="font-size:15px"' in core.render_viewer_html(
+          "T", nodes, edges, panel_fs=15))
+check("edge halo rect", 'class="edge-halo"' in doc_fs)
+check("marker css sync", "var(--edge-active)" in doc_fs
+      and "var(--edge-color)" in doc_fs)
+
+# --- read-only export separation -------------------------------------------------------
+check("export no toolbar", 'id="resetBtn"' not in doc_fs
+      and 'id="panelPosSel"' not in doc_fs)
+check("export toolbar present by default", 'id="resetBtn"' in doc_dark)
+check("locked drag baked", "const ALLOW_DRAG=false" in doc_fs
+      and 'data-drag="0"' in doc_fs)
+check("drag allowed by default", "const ALLOW_DRAG=true" in doc_dark)
+check("hint empty renders nothing",
+      'class="hint"' not in core.render_viewer_html("T", nodes, edges))
+check("hint renders when set",
+      'class="hint">hello</span>' in core.render_viewer_html(
+          "T", nodes, edges, hint_text="hello"))
+check("legend toggle off", 'class="legend-bar"' not in core.render_viewer_html(
+    "T", nodes, edges, show_legend=False))
+check("legend on by default", 'class="legend-bar"' in doc_dark)
+check("zero scrollbars css", "overflow-x:hidden" in doc_fs)
+check("sizes in JS payload", "const SIZES=" in doc_fs
+      and '"a": [' in doc_fs)
+
+# static SVG keeps font-size attributes
+svg_fs = core.to_svg(nodes, edges, "T", sizes=core.node_boxes(nodes),
+                     title_fs=16)
+check("static svg font size", 'font-size="16"' in svg_fs)
+
 print(f"\nAll {passed} checks passed.")

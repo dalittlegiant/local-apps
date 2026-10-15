@@ -115,20 +115,47 @@ auto-split/explicit-wins, layout layering + longest-path depth + TB
 direction + custom gaps + bad-direction fallback + tight viewBox size/attr,
 viewer HTML structure/escaping/`</script>` safety, pill nodes + two-line
 text + type dots, stepped Q-curve edges, dashed-default (3,4) vs.
-solid-lit edge styling, legend bar, bento panel + badge + position toggle
-+ root auto-select, drag handlers + tightViewBox + reset-positions button
-+ `data-x`/`data-y`, dark/light/custom themes (+ unknown fallback),
-5 panel positions (+ bad fallback), resizable shell + shell size params,
-default/custom info panel, Mermaid shapes/edge labels, SVG structure,
-both starter templates validating and rendering, SharePoint wrapper
-(fragment wrapped, full doc untouched, title escaped, empty safe).
-`AppTest` boot + template-button click verified (no
-`StreamlitWidgetAlreadyInstantiatedError`, title/tables/subtitle column
-update; theme/panel selectors settable). The exported HTML was
-additionally QA'd in a real Chromium (dark + light render, root
-auto-select, click-to-trace with bento cards + badge, stepped-edge live
-redraw on drag, viewBox recalc + exact restore, panel position toggle
-incl. hidden).
+solid-lit edge styling, legend bar (+ on/off toggle), bento panel + badge
++ position toggle + root auto-select + empty-card filter, drag handlers +
+tightViewBox + reset-positions button + `data-x`/`data-y`, dark/light/custom
+themes (+ unknown fallback), 5 panel positions (+ bad fallback), resizable
+shell + shell size params, default/custom info panel, auto-fit node boxes
+(min width, widen, wrap+grow, CJK 1.8x, blank-id skip, wide-layer spacing),
+font-size attributes (title/edge/panel), edge-label halo rect, marker CSS
+sync (`var(--edge-color)`/`var(--edge-active)`), export toolbar removal,
+drag-lock baking, hint empty/set, JS SIZES payload, static SVG font sizes,
+Mermaid shapes/edge labels, SVG structure, both starter templates validating
+and rendering, SharePoint wrapper (fragment wrapped, full doc untouched,
+title escaped, empty safe). `AppTest` boot + template-button click verified
+(no `StreamlitWidgetAlreadyInstantiatedError`, title/tables/subtitle column
+update; theme/panel selectors settable; font sliders, drag/legend
+checkboxes, hint input present). The exported HTML was additionally QA'd in
+a real Chromium (dark + light render, root auto-select, click-to-trace with
+bento cards + badge, stepped-edge live redraw on drag, viewBox recalc +
+exact restore, panel position toggle incl. hidden, read-only export with no
+toolbar/hint and locked dragging vs. draggable authoring preview).
+
+### Author vs. end-user separation (read-only export)
+
+The Streamlit preview is the **authoring** view: draggable nodes, Reset
+view / Reset positions toolbar, panel switcher, hint line. The downloaded
+`.html` is the **read-only end-user deliverable**: `show_toolbar=False`
+removes the whole toolbar (theme, colors, panel position are baked in from
+the Streamlit settings), `hint_text=""` renders nothing above the canvas
+by default, and `allow_drag=False` (default) skips the mousedown binding
+and switches nodes to `cursor:pointer` — clicks still trace paths and
+update the bento panel, but the layout can't be disturbed. Set "Allow node
+dragging in exported HTML" only when end-users should rearrange.
+
+### Auto-fit node sizing
+
+`node_box()`/`node_boxes()` estimate text width (ASCII 0.55×font-size,
+CJK 1.8× that, +48px padding), clamp width to 180–380px, word-wrap
+overlong text (CJK-safe hard split) and grow height (base 64px + line
+height per extra line). `layout(..., sizes=...)` offsets layers by each
+layer's max node width so same-rank neighbours never overlap. Font sizes
+are literal SVG attributes (static export stays self-contained); the
+viewer CSS carries no font-size rules for node/edge text.
 
 ## Future work
 

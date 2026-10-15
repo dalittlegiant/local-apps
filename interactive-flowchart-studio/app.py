@@ -115,6 +115,8 @@ def _viewer_opts() -> dict:
     if theme_key == "custom":
         for key, _label, default in CUSTOM_PICKERS:
             custom[key] = st.session_state.get(P + "cc_" + key, default)
+    title_fs = float(st.session_state.get(P + "fs_title", 13.5))
+    subtitle_fs = float(st.session_state.get(P + "fs_sub", 11.5))
     return {
         "direction": direction,
         "gap_x": int(st.session_state.get(P + "gapx", core.GAP_X)),
@@ -128,7 +130,18 @@ def _viewer_opts() -> dict:
         "custom_colors": custom or None,
         "shell_w": int(st.session_state.get(P + "shell_w", 1100)),
         "shell_h": int(st.session_state.get(P + "shell_h", 640)),
+        "title_fs": title_fs,
+        "subtitle_fs": subtitle_fs,
+        "edge_fs": float(st.session_state.get(P + "fs_edge", 11.0)),
+        "panel_fs": float(st.session_state.get(P + "fs_panel", 13.0)),
+        "hint_text": st.session_state.get(P + "hint", ""),
+        "show_legend": bool(st.session_state.get(P + "legend", True)),
     }
+
+
+def _node_sizes(nodes: list[dict], opts: dict) -> dict:
+    """Auto-fit boxes shared by layout and viewer so both agree."""
+    return core.node_boxes(nodes, opts["title_fs"], opts["subtitle_fs"])
 
 
 st.title("🔀 Interactive Flowchart Studio")
@@ -238,13 +251,28 @@ with tab_preview:
         with c2:
             st.slider("Horizontal gap (px)", 40, 260, core.GAP_X, key=P + "gapx")
             st.selectbox("Info panel position", PANEL_LABELS, key=P + "panel",
-                         help="Also switchable inside the exported HTML toolbar.")
+                         help="Baked into the exported HTML (read-only "
+                              "viewer has no toolbar).")
         with c3:
             st.slider("Vertical gap (px)", 16, 140, core.GAP_Y, key=P + "gapy")
             st.slider("Initial width (px)", 600, 1600, 1100, key=P + "shell_w",
                       help="SharePoint embed starting size — the shell stays "
                            "user-resizable in the browser.")
             st.slider("Initial height (px)", 400, 1000, 640, key=P + "shell_h")
+        st.subheader("🔤 Font sizes")
+        f1, f2, f3, f4 = st.columns(4)
+        with f1:
+            st.slider("Node title (px)", 10.0, 18.0, 13.5, 0.5, key=P + "fs_title")
+        with f2:
+            st.slider("Node subtitle (px)", 9.0, 15.0, 11.5, 0.5, key=P + "fs_sub")
+        with f3:
+            st.slider("Edge label (px)", 9.0, 14.0, 11.0, 0.5, key=P + "fs_edge")
+        with f4:
+            st.slider("Info panel body (px)", 11.0, 16.0, 13.0, 0.5,
+                      key=P + "fs_panel")
+        st.caption("📐 Node pills auto-fit their text (180–380px); overlong "
+                   "text wraps and the pill grows taller. CJK characters "
+                   "count 1.8× ASCII width.")
         if st.session_state.get(P + "theme", "Dark Obsidian") == "Custom":
             st.caption("🎨 Custom palette")
             cols = st.columns(3)
@@ -259,6 +287,20 @@ with tab_preview:
                      value=core.DEFAULT_INFO_TEXT, key=P + "info_c", height=80,
                      help="Shown in the bento panel whenever the selection is "
                           "cleared.")
+        st.subheader("📤 End-user export options")
+        e1, e2, e3 = st.columns(3)
+        with e1:
+            st.checkbox("Show bottom legend bar", value=True, key=P + "legend")
+        with e2:
+            st.checkbox("Allow node dragging in exported HTML", value=False,
+                        key=P + "allow_drag",
+                        help="Off = read-only SharePoint view: nodes only "
+                             "respond to clicks.")
+        with e3:
+            st.text_input("Viewer hint text (optional)", value="",
+                          key=P + "hint",
+                          help="Empty renders nothing above the canvas in "
+                               "the export.")
     with st.container(border=True):
         st.caption("Click any node to highlight its path and read its bento "
                    "detail cards. Drag nodes to rearrange them. "
@@ -278,10 +320,12 @@ with tab_preview:
         else:
             title = st.session_state.get(P + "title", "Flowchart")
             opts = _viewer_opts()
-            html_doc = core.render_viewer_html(title, nodes, edges, **opts)
+            sizes = _node_sizes(nodes, opts)
+            html_doc = core.render_viewer_html(title, nodes, edges,
+                                              sizes=sizes, **opts)
             _, sw, sh = core.layout(nodes, edges, opts["direction"],
-                                    opts["gap_x"], opts["gap_y"])
-            components.html(html_doc, height=min(760, sh + 260), scrolling=True)
+                                    opts["gap_x"], opts["gap_y"], sizes=sizes)
+            components.html(html_doc, height=min(900, sh + 300), scrolling=True)
 
 # ========================================================== TAB 3 ===
 with tab_export:
@@ -306,14 +350,22 @@ with tab_export:
             stem = "".join(c if c.isalnum() else "_" for c in title).strip("_") \
                 or "flowchart"
             opts = _viewer_opts()
+            sizes = _node_sizes(nodes, opts)
+            # Read-only end-user deliverable: no authoring toolbar, dragging
+            # locked unless the author explicitly allows it.
+            export_opts = dict(opts, sizes=sizes, show_toolbar=False,
+                               allow_drag=bool(
+                                   st.session_state.get(P + "allow_drag",
+                                                        False)))
             c1, c2, c3 = st.columns(3)
             with c1:
                 st.download_button(
                     "🌐 Interactive HTML", core.render_viewer_html(
-                        title, nodes, edges, **opts),
+                        title, nodes, edges, **export_opts),
                     f"{stem}.html", "text/html", key=P + "dl_html",
-                    help="Self-contained — double-click in Chrome/Edge, no Python needed. "
-                         "Carries your layout, spacing and info-panel defaults.")
+                    help="Self-contained read-only viewer for SharePoint — "
+                         "no Python needed. Theme, panel position and legend "
+                         "are baked in from your settings above.")
             with c2:
                 st.download_button("🧜 Mermaid (.mmd)",
                                    core.to_mermaid(nodes, edges),
@@ -323,7 +375,11 @@ with tab_export:
                                    core.to_svg(nodes, edges, title,
                                                opts["direction"], opts["gap_x"],
                                                opts["gap_y"],
-                                               theme=opts["theme"]),
+                                               theme=opts["theme"],
+                                               sizes=sizes,
+                                               title_fs=opts["title_fs"],
+                                               subtitle_fs=opts["subtitle_fs"],
+                                               edge_fs=opts["edge_fs"]),
                                    f"{stem}.svg", "image/svg+xml",
                                    key=P + "dl_svg")
             st.caption("PowerPoint: Insert → Pictures → this SVG (ungroup to edit "

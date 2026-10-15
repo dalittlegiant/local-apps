@@ -87,7 +87,8 @@ def theme_css_vars(t: dict) -> str:
             "--node-active-bg:{node_active_bg};"
             "--node-active-border:{node_active_border};"
             "--text:{text};--text-muted:{text_muted};"
-            "--edge:{edge};--edge-active:{edge_active};").format(**t)
+            "--edge:{edge};--edge-color:{edge};"
+            "--edge-active:{edge_active};").format(**t)
 
 
 def node_title_sub(node: dict) -> tuple[str, str]:
@@ -107,6 +108,86 @@ def node_title_sub(node: dict) -> tuple[str, str]:
 def type_accent(ntype: str, t: dict) -> str:
     return t["accents"].get(str(ntype).strip() or "action",
                             t["accents"]["action"])
+
+
+# ------------------------------------------------------------ text measure
+def _is_wide(ch: str) -> bool:
+    """CJK / wide characters count 1.8x an ASCII character."""
+    return ("\u4e00" <= ch <= "\u9fff" or "\u3400" <= ch <= "\u4dbf"
+            or "\uf900" <= ch <= "\ufaff" or "\u3040" <= ch <= "\u30ff"
+            or "\uac00" <= ch <= "\ud7af" or "\u3000" <= ch <= "\u303f"
+            or "\uff00" <= ch <= "\uffef")
+
+
+def _text_px(text: str, font_size: float) -> float:
+    """Estimated visual pixel width of a string at a font size."""
+    unit = 0.55 * font_size  # avg ASCII advance in Segoe UI
+    return sum(1.8 * unit if _is_wide(ch) else unit for ch in text)
+
+
+def _fit_lines(text: str, font_size: float, max_w: float) -> list[str]:
+    """Word-wrap (CJK-safe: hard-splits overlong words) into lines that fit
+    the node text budget (max_w minus 48px horizontal padding)."""
+    budget = max_w - 48
+    words, lines, cur = str(text or "").split(), [], ""
+    for wd in words:
+        trial = (cur + " " + wd).strip()
+        if _text_px(trial, font_size) <= budget or not cur:
+            cur = trial
+        else:
+            lines.append(cur)
+            cur = wd
+    if cur:
+        lines.append(cur)
+    out: list[str] = []
+    for ln in lines:
+        while _text_px(ln, font_size) > budget and len(ln) > 1:
+            k = len(ln)
+            while k > 1 and _text_px(ln[:k], font_size) > budget:
+                k -= 1
+            out.append(ln[:k])
+            ln = ln[k:]
+        out.append(ln)
+    return out or [""]
+
+
+def node_box(node: dict, title_fs: float = 13.5, subtitle_fs: float = 11.5,
+             min_w: float = 180, max_w: float = 380) -> dict:
+    """Auto-fit pill box for a node: width expands (min_w..max_w) to enclose
+    the text; overlong text wraps to multiple lines and the height grows
+    proportionally. Returns {"w","h","tl","sl"} (title/subtitle lines)."""
+    title, subtitle = node_title_sub(node)
+    tl = _fit_lines(title, title_fs, max_w)
+    sl = _fit_lines(subtitle, subtitle_fs, max_w) if subtitle else []
+    widest = max([_text_px(l, title_fs) for l in tl]
+                 + [_text_px(l, subtitle_fs) for l in sl] + [0])
+    w = min(max(widest + 48, min_w), max_w)
+    lh_t, lh_s = title_fs * 1.35, subtitle_fs * 1.35
+    block = len(tl) * lh_t + len(sl) * lh_s
+    h = max(64, block + 28)
+    return {"w": int(round(w)), "h": int(round(h)), "tl": tl, "sl": sl}
+
+
+def node_boxes(nodes: list[dict], title_fs: float = 13.5,
+               subtitle_fs: float = 11.5, min_w: float = 180,
+               max_w: float = 380) -> dict[str, dict]:
+    """{node_id: node_box(...)} for every node with a non-blank id."""
+    out = {}
+    for n in nodes:
+        nid = str(n.get("id", "")).strip()
+        if nid:
+            out[nid] = node_box(n, title_fs, subtitle_fs, min_w, max_w)
+    return out
+
+
+def _box_wh(nid: str, sizes: dict | None) -> tuple[float, float]:
+    """(width, height) for a node id; falls back to NODE_W/NODE_H."""
+    if sizes and nid in sizes:
+        s = sizes[nid]
+        if isinstance(s, dict):
+            return s.get("w", NODE_W), s.get("h", NODE_H)
+        return s[0], s[1]
+    return NODE_W, NODE_H
 
 
 # ------------------------------------------------------------ templates
@@ -227,12 +308,17 @@ def _incoming(nid: str, edges: list[dict]) -> list[dict]:
 
 # ------------------------------------------------------------ layout
 def layout(nodes: list[dict], edges: list[dict], direction: str = "LR",
-           gap_x: int = GAP_X, gap_y: int = GAP_Y
+           gap_x: int = GAP_X, gap_y: int = GAP_Y,
+           sizes: dict | None = None
            ) -> tuple[dict[str, tuple[int, int]], int, int]:
     """Layered layout. ``direction``: "LR" (depth -> columns, left to right)
     or "TB" (depth -> rows, top to bottom). ``gap_x``/``gap_y`` are the
-    horizontal/vertical spacing between node blocks. Returns
-    ({id: (x, y)}, svg_w, svg_h)."""
+    horizontal/vertical spacing between node blocks. ``sizes`` optionally
+    maps node id -> (w, h) (see ``node_boxes()``); wider nodes push the
+    following layers out so same-rank neighbours never overlap. With
+    ``sizes=None`` every node is NODE_W x NODE_H. Returns
+    ({id: (x, y)}, svg_w, svg_h) with a tight bounding box (see
+    ``_tight_box``)."""
     direction = "TB" if str(direction).upper() == "TB" else "LR"
     gap_x, gap_y = int(gap_x), int(gap_y)
     ids = [str(n.get("id", "")).strip() for n in nodes]
@@ -260,28 +346,40 @@ def layout(nodes: list[dict], edges: list[dict], direction: str = "LR",
         layers.setdefault(depth[i], []).append(i)
     pos: dict[str, tuple[int, int]] = {}
     if direction == "TB":
-        n_rows = max(layers, default=0) + 1
-        max_cols = max((len(c) for c in layers.values()), default=1)
-        total_w = max_cols * NODE_W + (max_cols - 1) * gap_x
+        row_h = {d: max(_box_wh(n, sizes)[1] for n in row)
+                 for d, row in layers.items()}
+        ys, acc = {}, PAD
+        for d in sorted(layers):
+            ys[d] = acc
+            acc += row_h[d] + gap_y
+        rows_w = {d: sum(_box_wh(n, sizes)[0] for n in row)
+                  + (len(row) - 1) * gap_x for d, row in layers.items()}
+        total_w = max(rows_w.values(), default=NODE_W)
         for d, row in layers.items():
-            y = PAD + d * (NODE_H + gap_y)
-            row_w = len(row) * NODE_W + (len(row) - 1) * gap_x
-            x0 = PAD + (total_w - row_w) // 2
-            for c, nid in enumerate(row):
-                pos[nid] = (x0 + c * (NODE_W + gap_x), y)
+            x = PAD + (total_w - rows_w[d]) // 2
+            for nid in row:
+                pos[nid] = (x, ys[d])
+                x += _box_wh(nid, sizes)[0] + gap_x
     else:
+        layer_w = {d: max(_box_wh(n, sizes)[0] for n in col)
+                   for d, col in layers.items()}
+        xs, acc = {}, PAD
+        for d in sorted(layers):
+            xs[d] = acc
+            acc += layer_w[d] + gap_x
+        col_h = {d: sum(_box_wh(n, sizes)[1] for n in col)
+                 + (len(col) - 1) * gap_y for d, col in layers.items()}
+        total_h = max(col_h.values(), default=NODE_H)
         for d, col in layers.items():
-            x = PAD + d * (NODE_W + gap_x)
-            col_h = len(col) * NODE_H + (len(col) - 1) * gap_y
-            max_rows = max((len(c) for c in layers.values()), default=1)
-            total_h = max_rows * NODE_H + (max_rows - 1) * gap_y
-            y0 = PAD + (total_h - col_h) // 2
-            for r, nid in enumerate(col):
-                pos[nid] = (x, y0 + r * (NODE_H + gap_y))
-    return pos, *_tight_box(pos)[2:]
+            y = PAD + (total_h - col_h[d]) // 2
+            for nid in col:
+                pos[nid] = (xs[d], y)
+                y += _box_wh(nid, sizes)[1] + gap_y
+    return pos, *_tight_box(pos, sizes)[2:]
 
 
-def _tight_box(pos: dict[str, tuple[int, int]]) -> tuple[float, float, float, float]:
+def _tight_box(pos: dict[str, tuple[int, int]],
+               sizes: dict | None = None) -> tuple[float, float, float, float]:
     """Tight SVG bounding box from actual node coordinates: (x0, y0, w, h).
 
     The frame hugs the diagram with a 12px margin on the top/left/right and
@@ -293,8 +391,8 @@ def _tight_box(pos: dict[str, tuple[int, int]]) -> tuple[float, float, float, fl
         return 0, 0, 2 * PAD + NODE_W, 2 * PAD + NODE_H
     l = min(x for x, _ in pos.values())
     t = min(y for _, y in pos.values())
-    r = max(x + NODE_W for x, _ in pos.values())
-    b = max(y + NODE_H for _, y in pos.values())
+    r = max(x + _box_wh(nid, sizes)[0] for nid, (x, _) in pos.items())
+    b = max(y + _box_wh(nid, sizes)[1] for nid, (_, y) in pos.items())
     return l - 12, t - 12, r - l + 24, b - t + 37
 
 
@@ -316,42 +414,64 @@ def _node_by_id(nodes: list[dict]) -> dict[str, dict]:
 
 
 # ------------------------------------------------------------ svg pieces
-def _svg_node(nid: str, node: dict, x: int, y: int, t: dict) -> str:
-    """Pill-shaped node (rx=26) with two-line text: bold primary title
-    (13.5px) + italic muted subtitle (11.5px), plus a type accent dot.
+def _svg_node(nid: str, node: dict, x: int, y: int, t: dict,
+              box: dict | None = None, title_fs: float = 13.5,
+              subtitle_fs: float = 11.5) -> str:
+    """Pill-shaped node (rx=26) with two-line text: bold primary title +
+    italic muted subtitle, plus a type accent dot.
 
-    Base colors are baked as literal attributes so the static SVG export
-    is self-contained; the interactive viewer overrides the active state
-    via CSS variables.
+    ``box`` (from ``node_box()``) carries the auto-fit width/height and
+    pre-wrapped lines; without it the node is NODE_W x NODE_H. Font sizes
+    are baked as literal attributes so the static SVG export stays
+    self-contained. Base colors are literal too; the interactive viewer
+    overrides the active state via CSS variables.
     """
     ntype = str(node.get("type", "action")).strip() or "action"
-    title, subtitle = node_title_sub(node)
     accent = type_accent(ntype, t)
-    cx, cy = x + NODE_W / 2, y + NODE_H / 2
-    if subtitle:
-        texts = (
-            f'<text class="node-title" x="{cx}" y="{cy - 7}" '
-            f'text-anchor="middle" fill="{t["text"]}">{html.escape(title)}</text>'
-            f'<text class="node-sub" x="{cx}" y="{cy + 15}" '
-            f'text-anchor="middle" fill="{t["text_muted"]}">{html.escape(subtitle)}</text>')
+    if box is None:
+        title, subtitle = node_title_sub(node)
+        tl, sl = _wrap(title or nid), [subtitle] if subtitle else []
+        w, h = NODE_W, NODE_H
     else:
-        lines = _wrap(title or nid)
-        texts = "".join(
-            f'<text class="node-title" x="{cx}" '
-            f'y="{cy - (len(lines) - 1) * 8 + i * 16 + 5}" '
-            f'text-anchor="middle" fill="{t["text"]}">{html.escape(ln)}</text>'
-            for i, ln in enumerate(lines))
+        w, h, tl, sl = box["w"], box["h"], box["tl"], box["sl"]
+    cx, cy = x + w / 2, y + h / 2
+    lh_t, lh_s = title_fs * 1.35, subtitle_fs * 1.35
+    y0 = cy - (len(tl) * lh_t + len(sl) * lh_s) / 2
+    texts = "".join(
+        f'<text class="node-title" x="{cx:.1f}" '
+        f'y="{y0 + lh_t * 0.82 + i * lh_t:.1f}" '
+        f'text-anchor="middle" font-size="{title_fs}" fill="{t["text"]}">'
+        f'{html.escape(ln)}</text>'
+        for i, ln in enumerate(tl))
+    texts += "".join(
+        f'<text class="node-sub" x="{cx:.1f}" '
+        f'y="{y0 + len(tl) * lh_t + lh_s * 0.82 + j * lh_s:.1f}" '
+        f'text-anchor="middle" font-size="{subtitle_fs}" '
+        f'fill="{t["text_muted"]}">{html.escape(ln)}</text>'
+        for j, ln in enumerate(sl))
     tip = html.escape(str(node.get("desc", ""))[:200])
     return (
         f'<g class="node" data-nid="{html.escape(nid)}" '
         f'data-x="{x}" data-y="{y}">'
         f"<title>{tip}</title>"
-        f'<rect class="pill" x="{x}" y="{y}" width="{NODE_W}" '
-        f'height="{NODE_H}" rx="26" ry="26" fill="{t["node_bg"]}" '
+        f'<rect class="pill" x="{x}" y="{y}" width="{w}" '
+        f'height="{h}" rx="26" ry="26" fill="{t["node_bg"]}" '
         f'stroke="{t["node_border"]}" stroke-width="1.6" '
         f'filter="url(#nodeShadow)"/>'
-        f'<circle class="node-dot" cx="{x + 22}" cy="{cy}" r="5" '
+        f'<circle class="node-dot" cx="{x + 18}" cy="{cy:.1f}" r="5" '
         f'fill="{accent}"/>{texts}</g>')
+
+
+def _label_halo(lx: float, ly: float, label: str, edge_fs: float,
+                t: dict) -> str:
+    """Rounded rect behind an edge label so connector lines never cut
+    through characters. Literal fill (self-contained static export) with
+    a var(--bg-canvas) CSS override in the viewer."""
+    w = _text_px(label, edge_fs) + 14
+    h = edge_fs * 1.6
+    return (f'<rect class="edge-halo" x="{lx - w / 2:.1f}" '
+            f'y="{ly - h / 2 - edge_fs * 0.15:.1f}" width="{w:.1f}" '
+            f'height="{h:.1f}" rx="4" fill="{t["bg_canvas"]}"/>')
 
 
 def _stepped_path(x1: float, y1: float, x2: float, y2: float,
@@ -385,28 +505,34 @@ def _stepped_path(x1: float, y1: float, x2: float, y2: float,
 
 
 def _svg_edge(edge: dict, pos: dict[str, tuple[int, int]], t: dict,
-              direction: str = "LR") -> str:
+              direction: str = "LR", sizes: dict | None = None,
+              edge_fs: float = 11.0) -> str:
     s, t_ = str(edge.get("source", "")).strip(), str(edge.get("target", "")).strip()
     if s not in pos or t_ not in pos:
         return ""
+    sw_, sh_ = _box_wh(s, sizes)
+    tw_, th_ = _box_wh(t_, sizes)
     if direction == "TB":
-        x1, y1 = pos[s][0] + NODE_W / 2, pos[s][1] + NODE_H
-        x2, y2 = pos[t_][0] + NODE_W / 2, pos[t_][1]
+        x1, y1 = pos[s][0] + sw_ / 2, pos[s][1] + sh_
+        x2, y2 = pos[t_][0] + tw_ / 2, pos[t_][1]
         d = _stepped_path(x1, y1, x2, y2, horizontal=False)
         lx, ly = (x1 + x2) / 2, (y1 + y2) / 2 - 8
     else:
-        x1, y1 = pos[s][0] + NODE_W, pos[s][1] + NODE_H / 2
-        x2, y2 = pos[t_][0], pos[t_][1] + NODE_H / 2
+        x1, y1 = pos[s][0] + sw_, pos[s][1] + sh_ / 2
+        x2, y2 = pos[t_][0], pos[t_][1] + th_ / 2
         d = _stepped_path(x1, y1, x2, y2, horizontal=True)
         lx, ly = (x1 + x2) / 2, (y1 + y2) / 2 - 8
-    label = html.escape(str(edge.get("label", "") or ""))
-    lab = (f'<text class="edge-label" x="{lx}" y="{ly}" text-anchor="middle" '
+    raw_label = str(edge.get("label", "") or "")
+    label = html.escape(raw_label)
+    halo = _label_halo(lx, ly, raw_label, edge_fs, t) if label else ""
+    lab = (f'<text class="edge-label" x="{lx:.1f}" y="{ly:.1f}" '
+           f'text-anchor="middle" font-size="{edge_fs}" '
            f'fill="{t["text_muted"]}">{label}</text>' if label else "")
     return (f'<g class="edge" data-source="{html.escape(s)}" '
             f'data-target="{html.escape(t_)}">'
             f'<path d="{d}" fill="none" stroke="{t["edge"]}" '
             f'stroke-width="1.6" stroke-dasharray="3 4" opacity="0.45" '
-            f'marker-end="url(#arrIn)"/>{lab}</g>')
+            f'marker-end="url(#arrIn)"/>{halo}{lab}</g>')
 
 
 def _svg_defs(t: dict) -> str:
@@ -425,24 +551,31 @@ def _svg_defs(t: dict) -> str:
 
 def _svg_inner(nodes: list[dict], edges: list[dict],
                pos: dict[str, tuple[int, int]], t: dict,
-               direction: str = "LR") -> str:
+               direction: str = "LR", sizes: dict | None = None,
+               boxes: dict | None = None, title_fs: float = 13.5,
+               subtitle_fs: float = 11.5, edge_fs: float = 11.0) -> str:
     by_id = _node_by_id(nodes)
     parts = [_svg_defs(t)]
-    parts += [_svg_edge(e, pos, t, direction) for e in edges]
+    parts += [_svg_edge(e, pos, t, direction, sizes, edge_fs) for e in edges]
     for nid, (x, y) in pos.items():
-        parts.append(_svg_node(nid, by_id.get(nid, {}), x, y, t))
+        parts.append(_svg_node(nid, by_id.get(nid, {}), x, y, t,
+                               boxes.get(nid) if boxes else None,
+                               title_fs, subtitle_fs))
     return "".join(parts)
 
 
 def _svg_body(nodes: list[dict], edges: list[dict],
               pos: dict[str, tuple[int, int]], svg_w: int, svg_h: int, t: dict,
-              for_export: bool = False, direction: str = "LR") -> str:
+              for_export: bool = False, direction: str = "LR",
+              sizes: dict | None = None, boxes: dict | None = None,
+              title_fs: float = 13.5, subtitle_fs: float = 11.5,
+              edge_fs: float = 11.0) -> str:
     cls = ' class="diagram"' if not for_export else ""
-    x0, y0, _, _ = _tight_box(pos)
+    x0, y0, _, _ = _tight_box(pos, sizes)
     return (f'<svg{cls} width="{svg_w}" height="{svg_h}" '
             f'viewBox="{x0} {y0} {svg_w} {svg_h}" '
             f'xmlns="http://www.w3.org/2000/svg">'
-            f"{_svg_inner(nodes, edges, pos, t, direction)}</svg>")
+            f"{_svg_inner(nodes, edges, pos, t, direction, sizes, boxes, title_fs, subtitle_fs, edge_fs)}</svg>")
 
 
 def _legend_bar(nodes: list[dict], t: dict) -> str:
@@ -465,6 +598,7 @@ def _legend_bar(nodes: list[dict], t: dict) -> str:
 _VIEWER_CSS = """
 *{box-sizing:border-box}
 body{margin:0;font-family:'Segoe UI',-apple-system,'Helvetica Neue',Arial,sans-serif;background:__BBG__;color:__BTX__}
+html,body{margin:0;padding:0;overflow-x:hidden}
 .widget-shell{resize:both;overflow:auto;border-radius:16px;min-width:340px;min-height:340px;
  background:var(--bg-canvas);color:var(--text);padding:14px}
 .layout{display:flex;gap:14px;align-items:stretch;min-height:100%}
@@ -490,13 +624,17 @@ h1.viewer-title{font-size:19px;margin:0 0 12px;letter-spacing:-.01em;color:var(-
 svg.diagram{user-select:none;-webkit-user-select:none;display:block;max-width:none}
 .node{cursor:grab;transition:opacity .18s ease}
 .node:active{cursor:grabbing}
-.node-title{font-size:13.5px;font-weight:700;font-family:'Segoe UI',Arial,sans-serif}
-.node-sub{font-size:11.5px;font-style:italic;font-family:'Segoe UI',Arial,sans-serif}
+.widget-shell[data-drag="0"] .node{cursor:pointer}
+.node-title{font-weight:700;font-family:'Segoe UI',Arial,sans-serif}
+.node-sub{font-style:italic;font-family:'Segoe UI',Arial,sans-serif}
 .node.active .pill{fill:var(--node-active-bg);stroke:var(--node-active-border);stroke-width:2.2}
 .edge path{fill:none;stroke:var(--edge);stroke-width:1.6;stroke-dasharray:3 4;opacity:.45;
  transition:stroke .18s ease,stroke-width .18s ease,opacity .18s ease}
-.edge-label{font-size:11.5px;font-weight:600;font-family:'Segoe UI',Arial,sans-serif;
+.edge-label{font-weight:600;font-family:'Segoe UI',Arial,sans-serif;
  fill:var(--text-muted);paint-order:stroke;stroke:var(--bg-canvas);stroke-width:4}
+.edge-halo{fill:var(--bg-canvas)}
+#arrIn path{fill:var(--edge-color)}
+#arrAct path{fill:var(--edge-active)}
 .edge.lit path{stroke:var(--edge-active);stroke-width:2;stroke-dasharray:none;opacity:1}
 .edge.lit .edge-label{fill:var(--edge-active)}
 svg.dim .node{opacity:.38}
@@ -516,11 +654,13 @@ svg.dim .edge.lit{opacity:1}
  padding:10px 12px;min-width:0}
 .bento-card.span2{grid-column:span 2}
 .bento-card h4{margin:0 0 6px;font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--text-muted)}
-.bento-card p{margin:0;font-size:13px;line-height:1.55;white-space:pre-wrap;color:var(--text)}
+.bento-card p{margin:0;font-size:1em;line-height:1.55;white-space:pre-wrap;color:var(--text)}
 """
 _VIEWER_JS = """
 const NODES=__NODES__, EDGES=__EDGES__;
-const DIR=__DIR__, NW=__NW__, NH=__NH__;
+const DIR=__DIR__;
+const SIZES=__SIZES__;
+const ALLOW_DRAG=__ALLOW_DRAG__, EDGE_FS=__EDGE_FS__;
 const INFO_H=__INFO_H__, INFO_C=__INFO_C__;
 const ROOT=__ROOT__;
 const incoming={}; EDGES.forEach(e=>{(incoming[e.target]=incoming[e.target]||[]).push(e.source);});
@@ -529,6 +669,7 @@ const layoutEl=document.getElementById('layout');
 const pos={};
 svg.querySelectorAll('.node').forEach(g=>{pos[g.dataset.nid]={bx:parseFloat(g.dataset.x),by:parseFloat(g.dataset.y),dx:0,dy:0};});
 const ex=nid=>pos[nid].bx+pos[nid].dx, ey=nid=>pos[nid].by+pos[nid].dy;
+const _w=nid=>(SIZES[nid]||[190,64])[0], _h=nid=>(SIZES[nid]||[190,64])[1];
 function stepped(x1,y1,x2,y2,horiz){
   const R=12;
   if(horiz){
@@ -550,22 +691,31 @@ function stepped(x1,y1,x2,y2,horiz){
 }
 function edgeGeom(s,t){
   if(DIR==='TB'){
-    const x1=ex(s)+NW/2,y1=ey(s)+NH,x2=ex(t)+NW/2,y2=ey(t);
+    const x1=ex(s)+_w(s)/2,y1=ey(s)+_h(s),x2=ex(t)+_w(t)/2,y2=ey(t);
     return {d:stepped(x1,y1,x2,y2,false),lx:(x1+x2)/2,ly:(y1+y2)/2-8};
   }
-  const x1=ex(s)+NW,y1=ey(s)+NH/2,x2=ex(t),y2=ey(t)+NH/2;
+  const x1=ex(s)+_w(s),y1=ey(s)+_h(s)/2,x2=ex(t),y2=ey(t)+_h(t)/2;
   return {d:stepped(x1,y1,x2,y2,true),lx:(x1+x2)/2,ly:(y1+y2)/2-8};
 }
 function redrawEdge(eg){
   const g=edgeGeom(eg.dataset.source,eg.dataset.target);
   eg.querySelector('path').setAttribute('d',g.d);
   const lab=eg.querySelector('.edge-label');
-  if(lab){lab.setAttribute('x',g.lx);lab.setAttribute('y',g.ly);}
+  if(lab){
+    lab.setAttribute('x',g.lx);lab.setAttribute('y',g.ly);
+    const halo=eg.querySelector('.edge-halo');
+    if(halo){
+      const w=lab.getComputedTextLength()+14,h=EDGE_FS*1.6;
+      halo.setAttribute('x',g.lx-w/2);
+      halo.setAttribute('y',g.ly-h/2-EDGE_FS*0.15);
+      halo.setAttribute('width',w);halo.setAttribute('height',h);
+    }
+  }
 }
 function tightViewBox(){
   let l=0,t=0,r=0,b=0,first=true;
   for(const nid in pos){
-    const x0=ex(nid),y0=ey(nid),x1=x0+NW,y1=y0+NH;
+    const x0=ex(nid),y0=ey(nid),x1=x0+_w(nid),y1=y0+_h(nid);
     if(first){l=x0;t=y0;r=x1;b=y1;first=false;}
     else{l=Math.min(l,x0);t=Math.min(t,y0);r=Math.max(r,x1);b=Math.max(b,y1);}
   }
@@ -604,9 +754,10 @@ function renderPanel(nid){
   const b=document.getElementById('bentoBadge');
   b.style.display='inline-block';b.textContent=n.typeLabel.toUpperCase();
   b.style.color=n.accent;b.style.borderColor=n.accent;b.style.background=n.accent+'1f';
-  const cards=parseDescCards(n.desc);
-  document.getElementById('bentoGrid').innerHTML=cards.map((c,i)=>
-    '<div class="bento-card'+(i<2&&cards.length>1?'':' span2')+'"><h4>'+esc(c.title)+
+  const cards=parseDescCards(n.desc).filter(c=>c.body&&c.body.trim());
+  const list=cards.length?cards:[{title:'Description',body:'(No detailed description)'}];
+  document.getElementById('bentoGrid').innerHTML=list.map((c,i)=>
+    '<div class="bento-card'+(i<2&&list.length>1?'':' span2')+'"><h4>'+esc(c.title)+
     '</h4><p>'+esc(c.body)+'</p></div>').join('');
 }
 function reset(){
@@ -628,12 +779,14 @@ function select(nid){
 }
 let drag=null,suppressClick=false;
 svg.querySelectorAll('.node').forEach(g=>{
-  g.addEventListener('click',ev=>ev.stopPropagation());
-  g.addEventListener('mousedown',ev=>{
-    ev.stopPropagation();ev.preventDefault();
-    const p=pos[g.dataset.nid];
-    drag={nid:g.dataset.nid,el:g,sx:ev.clientX,sy:ev.clientY,ox:p.dx,oy:p.dy,moved:false};
-  });
+  g.addEventListener('click',ev=>{ev.stopPropagation();select(g.dataset.nid);});
+  if(ALLOW_DRAG){
+    g.addEventListener('mousedown',ev=>{
+      ev.stopPropagation();ev.preventDefault();
+      const p=pos[g.dataset.nid];
+      drag={nid:g.dataset.nid,el:g,sx:ev.clientX,sy:ev.clientY,ox:p.dx,oy:p.dy,moved:false};
+    });
+  }
 });
 window.addEventListener('mousemove',ev=>{
   if(!drag)return;
@@ -660,14 +813,16 @@ document.querySelector('.diagram-card').addEventListener('click',ev=>{
   if(ev.target.closest('.node')||ev.target.closest('button')||ev.target.closest('select'))return;
   reset();
 });
-document.getElementById('resetBtn').addEventListener('click',ev=>{ev.stopPropagation();reset();});
-document.getElementById('resetPosBtn').addEventListener('click',ev=>{
+const rb=document.getElementById('resetBtn');
+if(rb){rb.addEventListener('click',ev=>{ev.stopPropagation();reset();});}
+const rpb=document.getElementById('resetPosBtn');
+if(rpb){rpb.addEventListener('click',ev=>{
   ev.stopPropagation();
   for(const nid in pos){pos[nid].dx=0;pos[nid].dy=0;}
   svg.querySelectorAll('.node').forEach(g=>g.removeAttribute('transform'));
   svg.querySelectorAll('.edge').forEach(redrawEdge);
   tightViewBox();
-});
+});}
 const pSel=document.getElementById('panelPosSel');
 if(pSel){pSel.value=__PANEL__;pSel.addEventListener('change',()=>{layoutEl.dataset.panel=pSel.value;});}
 renderDefaultPanel();
@@ -688,13 +843,21 @@ def _js_str(s: str) -> str:
 PANEL_POSITIONS = ("bottom", "top", "left", "right", "hidden")
 
 
+PANEL_POSITIONS = ("bottom", "top", "left", "right", "hidden")
+
+
 def render_viewer_html(title: str, nodes: list[dict], edges: list[dict],
                        direction: str = "LR", gap_x: int = GAP_X,
                        gap_y: int = GAP_Y, info_heading: str | None = None,
                        info_text: str | None = None, theme: str = "dark",
                        panel: str = "bottom",
                        custom_colors: dict | None = None,
-                       shell_w: int = 1100, shell_h: int = 640) -> str:
+                       shell_w: int = 1100, shell_h: int = 640,
+                       title_fs: float = 13.5, subtitle_fs: float = 11.5,
+                       edge_fs: float = 11.0, panel_fs: float = 13.0,
+                       sizes: dict | None = None,
+                       show_toolbar: bool = True, allow_drag: bool = True,
+                       hint_text: str = "", show_legend: bool = True) -> str:
     """Self-contained interactive viewer — double-clickable in any browser.
 
     direction: "LR" (left-to-right) or "TB" (top-to-bottom); gap_x/gap_y
@@ -704,21 +867,41 @@ def render_viewer_html(title: str, nodes: list[dict], edges: list[dict],
     (custom_colors overrides). panel: "bottom" | "top" | "left" |
     "right" | "hidden". shell_w/shell_h: initial .widget-shell size in px
     (the shell is user-resizable via CSS ``resize: both``).
+    title_fs/subtitle_fs/edge_fs/panel_fs: font-size sliders (px).
+    sizes: optional {node_id: (w, h) or {"w","h","tl","sl"}} auto-fit boxes
+    from ``node_boxes()`` (nodes widen/wrap instead of clipping text).
+    show_toolbar: include the author toolbar (Reset view / Reset
+    positions / panel switcher). allow_drag: nodes draggable in the
+    viewer (locked read-only view when False). hint_text: optional
+    instructional line (empty renders nothing). show_legend: bottom
+    legend bar toggle.
     """
     direction = "TB" if str(direction).upper() == "TB" else "LR"
     panel = str(panel or "bottom").lower()
     if panel not in PANEL_POSITIONS:
         panel = "bottom"
     t = resolve_theme(theme, custom_colors)
-    pos, sw, sh = layout(nodes, edges, direction, gap_x, gap_y)
+    boxes = None
+    if sizes:
+        boxes = {nid: (s if isinstance(s, dict) and "tl" in s
+                       else {"w": s[0], "h": s[1], "tl": _wrap(
+                           node_title_sub(
+                               _node_by_id(nodes).get(nid, {}))[0] or nid),
+                             "sl": []})
+                 for nid, s in sizes.items()}
+    pos, sw, sh = layout(nodes, edges, direction, gap_x, gap_y, sizes)
     by_id = _node_by_id(nodes)
     js_nodes = {}
     for nid in pos:
         n = by_id.get(nid, {})
         ntype = str(n.get("type", "action")).strip() or "action"
-        title_txt, _ = node_title_sub(n)
+        if boxes and nid in boxes:
+            title_txt = " ".join(boxes[nid]["tl"]) or nid
+        else:
+            title_txt, _ = node_title_sub(n)
+            title_txt = title_txt or nid
         js_nodes[nid] = {
-            "title": title_txt or nid,
+            "title": title_txt,
             "desc": str(n.get("desc", "") or ""),
             "typeLabel": TYPE_LABEL.get(ntype, "Step"),
             "accent": type_accent(ntype, t),
@@ -732,6 +915,9 @@ def render_viewer_html(title: str, nodes: list[dict], edges: list[dict],
     root = next((i for i in ids if i in pos and not _incoming(i, edges)), "")
     payload_nodes = json.dumps(js_nodes).replace("</", "<\\/")
     payload_edges = json.dumps(js_edges).replace("</", "<\\/")
+    payload_sizes = json.dumps(
+        {nid: [_box_wh(nid, sizes)[0], _box_wh(nid, sizes)[1]]
+         for nid in pos}).replace("</", "<\\/")
     heading = DEFAULT_INFO_HEADING if info_heading is None else info_heading
     body_text = DEFAULT_INFO_TEXT if info_text is None else info_text
     css = (_VIEWER_CSS.replace("__BBG__", t["bg_canvas"])
@@ -739,38 +925,50 @@ def render_viewer_html(title: str, nodes: list[dict], edges: list[dict],
     js = (_VIEWER_JS.replace("__NODES__", payload_nodes)
           .replace("__EDGES__", payload_edges)
           .replace("__DIR__", json.dumps(direction))
-          .replace("__NW__", str(NODE_W))
-          .replace("__NH__", str(NODE_H))
+          .replace("__SIZES__", payload_sizes)
+          .replace("__ALLOW_DRAG__", "true" if allow_drag else "false")
+          .replace("__EDGE_FS__", str(edge_fs))
           .replace("__INFO_H__", _js_str(heading))
           .replace("__INFO_C__", _js_str(body_text))
           .replace("__ROOT__", _js_str(root))
           .replace("__PANEL__", json.dumps(panel)))
-    body = _svg_body(nodes, edges, pos, sw, sh, t, direction=direction)
+    body = _svg_body(nodes, edges, pos, sw, sh, t, direction=direction,
+                     sizes=sizes, boxes=boxes, title_fs=title_fs,
+                     subtitle_fs=subtitle_fs, edge_fs=edge_fs)
     panel_opts = "".join(
         f'<option value="{p}">{p.capitalize()}</option>'
         for p in PANEL_POSITIONS)
+    if show_toolbar:
+        toolbar = (
+            f'<div class="toolbar"><button id="resetBtn">\u21ba Reset view</button>'
+            f'<button id="resetPosBtn" title="Undo all node dragging">'
+            f'\u2316 Reset positions</button>'
+            f'<select id="panelPosSel" title="Info panel position">'
+            f'{panel_opts}</select>'
+            + (f'<span class="hint">{html.escape(hint_text)}</span>'
+               if hint_text.strip() else "")
+            + f'</div>')
+    else:
+        toolbar = ""
+    legend = _legend_bar(nodes, t) if show_legend else ""
     shell = (
-        f'<div class="widget-shell" style="width:{int(shell_w)}px;'
+        f'<div class="widget-shell" data-drag="{"1" if allow_drag else "0"}" '
+        f'style="width:{int(shell_w)}px;'
         f'height:{int(shell_h)}px;{theme_css_vars(t)}">'
         f'<div class="layout" id="layout" data-panel="{panel}">'
         f'<section class="diagram-card">'
-        f'<div class="toolbar"><button id="resetBtn">\u21ba Reset view</button>'
-        f'<button id="resetPosBtn" title="Undo all node dragging">'
-        f'\u2316 Reset positions</button>'
-        f'<select id="panelPosSel" title="Info panel position">'
-        f'{panel_opts}</select>'
-        f'<span class="hint">Click a node to trace its path \u00b7 '
-        f'drag nodes to rearrange.</span></div>'
+        f'{toolbar}'
         f'<h1 class="viewer-title">{html.escape(title)}</h1>'
         f'<div class="svg-scroll">{body}</div>'
-        f'{_legend_bar(nodes, t)}'
+        f'{legend}'
         f'</section>'
         f'<aside class="panel-card">'
         f'<div class="bento-head">'
         f'<div class="bento-title" id="bentoTitle">{html.escape(heading)}</div>'
         f'<span class="bento-badge" id="bentoBadge" style="display:none">'
         f'</span></div>'
-        f'<div class="bento-grid" id="bentoGrid"></div>'
+        f'<div class="bento-grid" id="bentoGrid" '
+        f'style="font-size:{panel_fs}px"></div>'
         f'</aside>'
         f'</div></div>')
     return ("<!DOCTYPE html>\n<html lang=\"en\"><head>"
@@ -807,12 +1005,20 @@ def to_mermaid(nodes: list[dict], edges: list[dict]) -> str:
 
 def to_svg(nodes: list[dict], edges: list[dict], title: str = "",
            direction: str = "LR", gap_x: int = GAP_X, gap_y: int = GAP_Y,
-           theme: str = "dark") -> str:
-    """Static SVG export (for PowerPoint / docs). Theme colors are baked in
-    as literal attributes so the file is self-contained."""
+           theme: str = "dark", sizes: dict | None = None,
+           title_fs: float = 13.5, subtitle_fs: float = 11.5,
+           edge_fs: float = 11.0) -> str:
+    """Static SVG export (for PowerPoint / docs). Theme colors and font
+    sizes are baked in as literal attributes so the file is
+    self-contained."""
     direction = "TB" if str(direction).upper() == "TB" else "LR"
     t = resolve_theme(theme)
-    pos, sw, sh = layout(nodes, edges, direction, gap_x, gap_y)
+    boxes = None
+    if sizes:
+        boxes = {nid: (s if isinstance(s, dict) and "tl" in s
+                       else {"w": s[0], "h": s[1], "tl": [""], "sl": []})
+                 for nid, s in sizes.items()}
+    pos, sw, sh = layout(nodes, edges, direction, gap_x, gap_y, sizes)
     top = 44 if title else 0
     title_el = (f'<text x="{PAD}" y="30" font-size="20" font-weight="700" '
                 f'fill="{t["text"]}" font-family="Segoe UI, Arial, sans-serif">'
@@ -822,7 +1028,7 @@ def to_svg(nodes: list[dict], edges: list[dict], title: str = "",
             f'xmlns="http://www.w3.org/2000/svg">'
             f'<rect width="{sw}" height="{sh + top}" fill="{t["bg_canvas"]}"/>'
             f'<g transform="translate(0,{top})">'
-            f"{_svg_inner(nodes, edges, pos, t, direction)}</g>{title_el}</svg>")
+            f"{_svg_inner(nodes, edges, pos, t, direction, sizes, boxes, title_fs, subtitle_fs, edge_fs)}</g>{title_el}</svg>")
 
 
 # ------------------------------------------------------------ sharepoint wrap
