@@ -38,6 +38,12 @@ several tools belong together (`unified-data-studio`). Conventions:
    pages, so `tmdl_`, `sec_`, `thu_` style prefixes prevent collisions.
 4. `tests/run_tests.py` must pass before commit; verify page scripts with
    Streamlit's `AppTest` headless runner when the UI changes.
+5. Registering a new tool: build it as its own top-level directory
+   (`app.py` with no `set_page_config`, a `sys.path` bootstrap so local
+   imports work standalone and via the launcher, session keys prefixed per
+   app, unique `url_path`), then add one `st.Page("../<dir>/app.py", …)`
+   line in the launcher's section dict. Existing app folders are read-only
+   — never refactor them to fit the launcher.
 
 ## New-app checklist
 

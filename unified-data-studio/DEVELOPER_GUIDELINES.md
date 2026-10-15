@@ -136,6 +136,22 @@ installed if the pages change.
 - `use_container_width=True` is kept (not the newer `width="stretch"`) so
   the app stays compatible with the `streamlit>=1.36` floor.
 
+## Suite apps 4–7 (standalone dirs, wired into `launcher.py`)
+
+Each lives in its own top-level directory with `app.py` (UI) + `*_core.py`
+(pure logic) + `tests/run_tests.py` + `requirements.txt` +
+`DEVELOPER_GUIDELINES.md`. They are registered in the launcher's sectioned
+`st.navigation` via `st.Page("../<dir>/app.py", …, url_path="<unique>")`
+— `url_path` is required because every app entrypoint is named `app.py`.
+Session prefixes: `ppt4_`, `dd5_`, `san6_`, `pdf7_`.
+
+| # | App | Dir | Core module |
+|---|-----|-----|-------------|
+| 4 | PPT Playbook Builder | `../auto-ppt-playbook-builder/` | `ppt_core.py` — Pillow annotation, 16:9 slide building, dictionary pagination, image-preserving slide clone + `{{tag}}` mail-merge |
+| 5 | SQL Sandbox & Diff Engine | `../data-diff-duckdb-sandbox/` | `diff_core.py` — parquet/csv/xlsx loading, profiler, DuckDB runner, key-based diff (added/deleted/schema/cell-level) |
+| 6 | Messy Excel Sanitizer | `../messy-excel-sanitizer/` | `sanitize_core.py` — merged-cell handling, sanitization pipeline, schema validation, concatenation |
+| 7 | Comms & PDF Toolkit | `../office-comms-pdf-toolkit/` | `toolkit_core.py` — 5 comms templates, pypdf/pdfplumber/reportlab ops, Pillow beautifier |
+
 ## Future work
 
 - Relationships/hierarchies in the TMDL parser (currently skipped).
