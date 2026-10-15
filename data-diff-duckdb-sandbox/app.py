@@ -69,23 +69,58 @@ def _sheet_names(up) -> list:
     return st.session_state[key]
 
 
-def _ingest(up, sheet=None) -> str:
-    """Stage + register an upload exactly once per (name, size, sheet).
+def _sheet_names_path(path_str: str) -> list:
+    key = (P + "sheets", "path", path_str)
+    if key not in st.session_state:
+        p = Path(path_str)
+        if not p.is_file():
+            raise ValueError(f"File not found: {path_str}")
+        st.session_state[key] = core.excel_sheets(p.read_bytes())
+    return st.session_state[key]
 
-    parquet/csv → staged to the OS temp dir, scanned natively by DuckDB
-    (VIEW — the file never becomes a pandas DataFrame). xlsx → parsed
-    once via pandas, materialized as a DuckDB TABLE. Returns the table
-    name. Never re-parses on Streamlit reruns.
+
+def _norm_source(kind: str, raw) -> dict:
+    """Normalize an upload or a local path into a source dict.
+
+    kind="upload" → raw is an UploadedFile; kind="path" → raw is a string.
     """
-    key = (up.name, up.size, sheet)
+    if kind == "upload":
+        return {"kind": "upload", "up": raw, "label": raw.name,
+                "key": ("upload", raw.name, raw.size)}
+    s = str(raw).strip().strip('"').strip("'")
+    p = Path(s)
+    return {"kind": "path", "path": str(p), "label": p.name,
+            "key": ("path", str(p.resolve()) if p.exists() else s)}
+
+
+def _ingest_src(src: dict, sheet=None) -> str:
+    """Stage + register a source exactly once.
+
+    Uploads: parquet/csv staged to the OS temp dir and scanned natively by
+    DuckDB (VIEW); xlsx parsed once into a DuckDB TABLE.
+    Local paths: parquet/csv are queried IN PLACE — DuckDB reads the file
+    directly, bypassing Python memory entirely; xlsx is read once via pandas.
+    Returns the table name. Never re-parses on Streamlit reruns.
+    """
+    key = src["key"] + (sheet,)
     reg = _registry()
     if key in reg:
         return reg[key]["tname"]
     con = _con()
-    base = core.sanitize_table_name(up.name)
-    lname = up.name.lower()
+    if src["kind"] == "upload":
+        up = src["up"]
+        lname, base, disp = up.name.lower(), core.sanitize_table_name(up.name), up.name
+        raw = up.getvalue()
+        staged = True
+    else:
+        p = Path(src["path"])
+        if not p.is_file():
+            raise ValueError(f"File not found: {src['path']}")
+        lname, base, disp = p.name.lower(), core.sanitize_table_name(p.name), p.name
+        raw, staged = None, False
     if lname.endswith((".xlsx", ".xls")):
-        df = core.load_upload(up.name, up.getvalue(), sheet=sheet)
+        data = raw if raw is not None else Path(src["path"]).read_bytes()
+        df = core.load_upload(disp, data, sheet=sheet)
         tname = _unique_tname(f"{base}_{core.sanitize_table_name(str(sheet))}")
         con.register("__dd5_tmp", df)
         try:
@@ -97,12 +132,18 @@ def _ingest(up, sheet=None) -> str:
             except Exception:
                 pass
         reg[key] = {"tname": tname, "kind": "table", "path": None}
-    else:
-        path = core.write_upload_to_temp(up.name, up.getvalue())
+    elif lname.endswith((".parquet", ".csv")):
+        if staged:
+            fpath = core.write_upload_to_temp(disp, raw)
+            cleanup = fpath
+        else:
+            fpath, cleanup = str(Path(src["path"])), None  # DuckDB reads in place
         tname = _unique_tname(base)
-        clause = core.duckdb_source_clause(path, up.name)
+        clause = core.duckdb_source_clause(fpath, disp)
         con.execute(f'CREATE OR REPLACE VIEW "{tname}" AS SELECT * FROM {clause}')
-        reg[key] = {"tname": tname, "kind": "view", "path": path}
+        reg[key] = {"tname": tname, "kind": "view", "path": cleanup}
+    else:
+        raise ValueError(f"Unsupported file type: {disp} (use .parquet/.csv/.xlsx)")
     return tname
 
 
@@ -125,11 +166,18 @@ def _drop_all():
         st.session_state.pop(k, None)
 
 
-def _diff_df(up, tag):
-    """Diff-tab DataFrames, parsed once per (tag, name, size)."""
-    key = (P + "diffdf", tag, up.name, up.size)
+def _diff_df_src(src: dict, tag):
+    """Diff-tab DataFrames, parsed once per source."""
+    key = (P + "diffdf", tag) + src["key"]
     if key not in st.session_state:
-        st.session_state[key] = core.load_upload(up.name, up.getvalue())
+        if src["kind"] == "upload":
+            df = core.load_upload(src["up"].name, src["up"].getvalue())
+        else:
+            p = Path(src["path"])
+            if not p.is_file():
+                raise ValueError(f"File not found: {src['path']}")
+            df = core.load_upload(p.name, p.read_bytes())
+        st.session_state[key] = df
     return st.session_state[key]
 
 
@@ -221,31 +269,48 @@ tab_sql, tab_diff = st.tabs(["🔍 Profiler & SQL Runner", "⚖️ Version Diff 
 
 # ============================================================ TAB 1 ===
 with tab_sql:
-    st.header("Drop files, query with SQL")
+    st.header("Drop files or point at local paths, query with SQL")
     with st.container(border=True):
-        ups = st.file_uploader("Data files (.parquet / .csv / .xlsx)",
-                               type=["parquet", "csv", "xlsx", "xls"],
-                               accept_multiple_files=True, key=P + "ups")
-        st.caption("Uploads up to 500 MB. Each file is staged **once** to "
-                   "your OS temp folder and scanned natively by DuckDB — "
-                   "no re-parse when you click around, and temp files are "
-                   "never inside the repo.")
+        src_mode = st.radio("Input method", ("Upload File", "Read from Local Path"),
+                            horizontal=True, key=P + "srcmode")
+        sources: list = []
+        if src_mode == "Upload File":
+            ups = st.file_uploader("Data files (.parquet / .csv / .xlsx)",
+                                   type=["parquet", "csv", "xlsx", "xls"],
+                                   accept_multiple_files=True, key=P + "ups")
+            st.caption("Each file is staged **once** to your OS temp folder "
+                       "and scanned natively by DuckDB — no re-parse when "
+                       "you click around, and temp files are never inside "
+                       "the repo.")
+            sources = [_norm_source("upload", up) for up in ups] if ups else []
+        else:
+            path_txt = st.text_area(
+                "Absolute file paths (one per line)",
+                placeholder=r"C:\data\sales.parquet" "\n" r"D:\exports\2024.csv",
+                key=P + "paths")
+            st.caption("Paths are read **directly** by DuckDB — a large "
+                       "Parquet/CSV never touches Python memory.")
+            sources = [_norm_source("path", p)
+                       for p in path_txt.splitlines() if p.strip()]
 
-    if ups:
+    if sources:
         tnames = []
-        for up in ups:
-            lname = up.name.lower()
+        for src in sources:
+            label = src["label"]
             try:
-                if lname.endswith((".xlsx", ".xls")):
-                    sheets = _sheet_names(up)
+                if label.lower().endswith((".xlsx", ".xls")):
+                    if src["kind"] == "upload":
+                        sheets = _sheet_names(src["up"])
+                    else:
+                        sheets = _sheet_names_path(src["path"])
                     sheet = st.selectbox(
-                        f"Sheet for {up.name}", sheets,
-                        key=P + f"sheet_{up.name}_{up.size}")
-                    tnames.append(_ingest(up, sheet=sheet))
+                        f"Sheet for {label}", sheets,
+                        key=P + f"sheet_{src['key'][0]}_{label}")
+                    tnames.append(_ingest_src(src, sheet=sheet))
                 else:
-                    tnames.append(_ingest(up))
+                    tnames.append(_ingest_src(src))
             except ValueError as e:
-                st.error(f"⚠️ {up.name}: {e}")
+                st.error(f"⚠️ {label}: {e}")
 
         if tnames:
             st.success(f"Registered {len(tnames)} table(s): "
@@ -330,8 +395,9 @@ with tab_sql:
         with st.container(border=True):
             st.subheader("👋 Start by uploading a data file")
             st.markdown(
-                "1. **Upload** one or more `.parquet`, `.csv`, or `.xlsx` "
-                "files above (up to 500 MB each).\n"
+                "1. **Provide data** — *Upload File* for quick files, or "
+                "*Read from Local Path* and paste absolute paths (one per "
+                "line) for large datasets.\n"
                 "2. **Profile** — check schema, null %, and cardinality "
                 "without loading the file into memory.\n"
                 "3. **Query** — write DuckDB SQL and hit **Run query**. "
@@ -351,20 +417,41 @@ with tab_diff:
                "and cell-level old → new changes.")
 
     with st.container(border=True):
+        dsrc_mode = st.radio("Input method", ("Upload File", "Read from Local Path"),
+                             horizontal=True, key=P + "dsrcmode")
         c1, c2 = st.columns(2)
-        with c1:
-            old_up = st.file_uploader("Old version",
-                                      type=["parquet", "csv", "xlsx", "xls"],
-                                      key=P + "old")
-        with c2:
-            new_up = st.file_uploader("New version",
-                                      type=["parquet", "csv", "xlsx", "xls"],
-                                      key=P + "new")
+        old_src = new_src = None
+        if dsrc_mode == "Upload File":
+            with c1:
+                old_up = st.file_uploader("Old version",
+                                          type=["parquet", "csv", "xlsx", "xls"],
+                                          key=P + "old")
+                if old_up:
+                    old_src = _norm_source("upload", old_up)
+            with c2:
+                new_up = st.file_uploader("New version",
+                                          type=["parquet", "csv", "xlsx", "xls"],
+                                          key=P + "new")
+                if new_up:
+                    new_src = _norm_source("upload", new_up)
+        else:
+            with c1:
+                old_path = st.text_input("Old version — absolute path",
+                                         placeholder=r"C:\data\old.parquet",
+                                         key=P + "old_path")
+                if old_path.strip():
+                    old_src = _norm_source("path", old_path)
+            with c2:
+                new_path = st.text_input("New version — absolute path",
+                                         placeholder=r"C:\data\new.parquet",
+                                         key=P + "new_path")
+                if new_path.strip():
+                    new_src = _norm_source("path", new_path)
 
-    if old_up and new_up:
+    if old_src and new_src:
         try:
-            old = _diff_df(old_up, "old")
-            new = _diff_df(new_up, "new")
+            old = _diff_df_src(old_src, "old")
+            new = _diff_df_src(new_src, "new")
         except ValueError as e:
             st.error(f"⚠️ {e}")
             st.stop()

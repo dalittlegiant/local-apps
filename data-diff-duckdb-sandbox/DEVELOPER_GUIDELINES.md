@@ -63,12 +63,16 @@ suite launcher, which owns page config).
 
 ## App-specific conventions
 
-- **Ingest-once registry** (`st.session_state["dd5_registry"]`, keyed by
-  `(filename, size[, sheet])`): parquet/csv are staged to temp and exposed
-  as DuckDB VIEWs over `read_parquet`/`read_csv_auto`; xlsx is parsed once
+- **Ingest-once registry** (`st.session_state["dd5_registry"]`): uploads
+  are keyed by `("upload", filename, size[, sheet])`, local paths by
+  `("path", abspath[, sheet])`. parquet/csv uploads are staged to the OS
+  temp dir and exposed as DuckDB VIEWs over `read_parquet`/`read_csv_auto`;
+  **local paths are queried in place** — DuckDB reads the file directly,
+  bypassing Python memory entirely. xlsx (either source) is parsed once
   and materialized as a DuckDB TABLE. Nothing is re-parsed on reruns.
   Name collisions get `_2`, `_3` suffixes. "Clear all tables" drops the
-  views/tables and deletes the temp files.
+  views/tables and deletes the temp files (path-mode files are never
+  touched).
 - The DuckDB connection lives in session state (in-memory, per browser
   session).
 - **Query isolation**: the SQL editor + Run button live in an `st.form`, so
