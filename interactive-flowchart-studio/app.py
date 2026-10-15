@@ -34,15 +34,15 @@ except Exception:
     pass  # running inside the suite launcher — page config owned by launcher.py
 
 P = "fc8_"
-NODE_COLS = ["id", "label", "type", "desc"]
+NODE_COLS = ["id", "label", "subtitle", "type", "desc"]
 EDGE_COLS = ["source", "target", "label"]
 
 
 def _nodes() -> pd.DataFrame:
     return st.session_state.setdefault(
         P + "nodes",
-        pd.DataFrame([{"id": "start", "label": "Start here", "type": "action",
-                       "desc": "Describe this step…"}]))
+        pd.DataFrame([{"id": "start", "label": "Start here", "subtitle": "",
+                       "type": "action", "desc": "Describe this step…"}]))
 
 
 def _edges() -> pd.DataFrame:
@@ -72,11 +72,36 @@ def _load_template(key: str):
     states are dropped so the editors re-initialize from the new frames.
     """
     tpl = core.starter_templates()[key]
-    st.session_state[P + "nodes"] = pd.DataFrame(tpl["nodes"])
-    st.session_state[P + "edges"] = pd.DataFrame(tpl["edges"])
+    nodes = pd.DataFrame(tpl["nodes"])
+    for c in NODE_COLS:  # templates predate the Subtitle column
+        if c not in nodes.columns:
+            nodes[c] = ""
+    edges = pd.DataFrame(tpl["edges"])
+    for c in EDGE_COLS:
+        if c not in edges.columns:
+            edges[c] = ""
+    st.session_state[P + "nodes"] = nodes[NODE_COLS]
+    st.session_state[P + "edges"] = edges[EDGE_COLS]
     st.session_state[P + "title"] = tpl["name"]
     for k in (P + "nodes_ed", P + "edges_ed"):
         st.session_state.pop(k, None)
+
+
+THEME_LABELS = ("Dark Obsidian", "Clean White", "Custom")
+THEME_KEYS = {"Dark Obsidian": "dark", "Clean White": "light",
+              "Custom": "custom"}
+CUSTOM_PICKERS = [
+    ("canvas_bg", "Canvas BG", "#0e1015"),
+    ("panel_bg", "Panel BG", "#0e1015"),
+    ("node_bg", "Node BG", "#15181f"),
+    ("node_border", "Node Border", "#383e4c"),
+    ("active_node_bg", "Active Node BG", "#1c2846"),
+    ("active_node_border", "Active Node Border", "#5c8df6"),
+    ("primary_text", "Primary Text", "#f3f4f6"),
+    ("subtitle_text", "Subtitle Text", "#9ca3af"),
+    ("edge_color", "Edge Color", "#6b7280"),
+]
+PANEL_LABELS = ("Bottom", "Top", "Left", "Right", "Hidden")
 
 
 def _viewer_opts() -> dict:
@@ -84,6 +109,12 @@ def _viewer_opts() -> dict:
     direction = ("TB" if st.session_state.get(P + "dir",
                                               "Left-to-Right") == "Top-to-Bottom"
                  else "LR")
+    theme_key = THEME_KEYS.get(st.session_state.get(P + "theme",
+                                                    "Dark Obsidian"), "dark")
+    custom = {}
+    if theme_key == "custom":
+        for key, _label, default in CUSTOM_PICKERS:
+            custom[key] = st.session_state.get(P + "cc_" + key, default)
     return {
         "direction": direction,
         "gap_x": int(st.session_state.get(P + "gapx", core.GAP_X)),
@@ -92,6 +123,11 @@ def _viewer_opts() -> dict:
                                              core.DEFAULT_INFO_HEADING),
         "info_text": st.session_state.get(P + "info_c",
                                           core.DEFAULT_INFO_TEXT),
+        "theme": theme_key,
+        "panel": st.session_state.get(P + "panel", "Bottom").lower(),
+        "custom_colors": custom or None,
+        "shell_w": int(st.session_state.get(P + "shell_w", 1100)),
+        "shell_h": int(st.session_state.get(P + "shell_h", 640)),
     }
 
 
@@ -127,7 +163,14 @@ with tab_edit:
             key=P + "nodes_ed",
             column_config={
                 "id": st.column_config.TextColumn("Node_ID", required=True),
-                "label": st.column_config.TextColumn("Label", required=True),
+                "label": st.column_config.TextColumn(
+                    "Label", required=True,
+                    help="Tip: 'Main Title | Subtitle' auto-splits into "
+                         "two-line pill text."),
+                "subtitle": st.column_config.TextColumn(
+                    "Subtitle",
+                    help="Optional second line (italic, muted). Overrides "
+                         "the '| Subtitle' part of Label when set."),
                 "type": st.column_config.SelectboxColumn(
                     "Node_Type", options=list(core.NODE_TYPES), required=True),
                 "desc": st.column_config.TextColumn("Detailed_Description",
@@ -191,19 +234,34 @@ with tab_preview:
         with c1:
             st.radio("Layout direction", ("Left-to-Right", "Top-to-Bottom"),
                      horizontal=True, key=P + "dir")
+            st.selectbox("Theme", THEME_LABELS, key=P + "theme")
         with c2:
             st.slider("Horizontal gap (px)", 40, 260, core.GAP_X, key=P + "gapx")
+            st.selectbox("Info panel position", PANEL_LABELS, key=P + "panel",
+                         help="Also switchable inside the exported HTML toolbar.")
         with c3:
             st.slider("Vertical gap (px)", 16, 140, core.GAP_Y, key=P + "gapy")
-        st.text_input("Default info panel heading",
-                      value=core.DEFAULT_INFO_HEADING, key=P + "info_h")
-        st.text_area("Default info panel content",
+            st.slider("Initial width (px)", 600, 1600, 1100, key=P + "shell_w",
+                      help="SharePoint embed starting size — the shell stays "
+                           "user-resizable in the browser.")
+            st.slider("Initial height (px)", 400, 1000, 640, key=P + "shell_h")
+        if st.session_state.get(P + "theme", "Dark Obsidian") == "Custom":
+            st.caption("🎨 Custom palette")
+            cols = st.columns(3)
+            for i, (key, label, default) in enumerate(CUSTOM_PICKERS):
+                with cols[i % 3]:
+                    st.color_picker(label, default, key=P + "cc_" + key)
+        st.text_input("Default Panel Title",
+                      value=core.DEFAULT_INFO_HEADING, key=P + "info_h",
+                      help="Bento panel header when no node is selected. The "
+                           "first root node is auto-selected on load.")
+        st.text_area("Default Panel Content",
                      value=core.DEFAULT_INFO_TEXT, key=P + "info_c", height=80,
-                     help="Shown in the side panel until a node is clicked, "
-                          "and again whenever the selection is cleared.")
+                     help="Shown in the bento panel whenever the selection is "
+                          "cleared.")
     with st.container(border=True):
-        st.caption("Click any node to highlight its path from the start and read "
-                   "its detailed description. Drag nodes to rearrange them. "
+        st.caption("Click any node to highlight its path and read its bento "
+                   "detail cards. Drag nodes to rearrange them. "
                    "Click the background to reset.")
         nodes = _as_records(st.session_state[P + "nodes"], NODE_COLS)
         edges = [e for e in _as_records(st.session_state[P + "edges"], EDGE_COLS)
@@ -264,7 +322,8 @@ with tab_export:
                 st.download_button("🖼️ SVG (for PowerPoint)",
                                    core.to_svg(nodes, edges, title,
                                                opts["direction"], opts["gap_x"],
-                                               opts["gap_y"]),
+                                               opts["gap_y"],
+                                               theme=opts["theme"]),
                                    f"{stem}.svg", "image/svg+xml",
                                    key=P + "dl_svg")
             st.caption("PowerPoint: Insert → Pictures → this SVG (ungroup to edit "

@@ -92,7 +92,7 @@ check("mermaid edge label", '-->|"Yes"|' in mm)
 # --- svg -----------------------------------------------------------------------
 svg = core.to_svg(nodes, edges, "My Flow")
 check("svg wrapper", svg.startswith("<svg") and "</svg>" in svg)
-check("svg shapes", "<polygon" in svg and "<rect" in svg)
+check("svg shapes", 'rx="26"' in svg and "<circle" in svg)  # pill nodes + type dots
 check("svg title", "My Flow" in svg)
 
 # --- templates ------------------------------------------------------------------
@@ -131,7 +131,7 @@ check("bad direction falls back to LR",
 
 # --- viewer: dashed edges, drag, info panel ----------------------------------
 doc = core.render_viewer_html("My Flow", nodes, edges)
-check("edges dashed by default", "stroke-dasharray:6 4" in doc)
+check("edges dashed by default", "stroke-dasharray:3 4" in doc)
 check("lit edge style", ".edge.lit path" in doc and "stroke-dasharray:none" in doc)
 check("drag handlers", "mousedown" in doc and "redrawEdge" in doc)
 check("reset positions button", 'id="resetPosBtn"' in doc)
@@ -149,7 +149,72 @@ check("no external deps",
 svg_tb = core.to_svg(nodes, edges, "T", direction="TB")
 check("svg TB renders", svg_tb.startswith("<svg") and "</svg>" in svg_tb)
 
-# --- sharepoint wrapper ---------------------------------------------------------
+# --- pill nodes / subtitles ---------------------------------------------------
+t1, s1 = core.node_title_sub({"label": "Main Title | Sub Title"})
+check("label auto-split", (t1, s1) == ("Main Title", "Sub Title"))
+t2, s2 = core.node_title_sub({"label": "A | B", "subtitle": "Explicit"})
+check("explicit subtitle wins", (t2, s2) == ("A | B", "Explicit"))
+t3, s3 = core.node_title_sub({"label": "Plain"})
+check("no subtitle", (t3, s3) == ("Plain", ""))
+doc_sub = core.render_viewer_html(
+    "T", [dict(nodes[0], label="Main Title | Sub Title")], [])
+check("pill node", 'rx="26"' in doc_sub and 'class="pill"' in doc_sub)
+check("two-line text", 'class="node-title"' in doc_sub
+      and 'class="node-sub"' in doc_sub and "Sub Title" in doc_sub)
+check("type dot", 'class="node-dot"' in doc_sub)
+
+# --- orthogonal stepped edges -------------------------------------------------
+doc_e = core.render_viewer_html("T", nodes, edges)
+check("stepped path Q curves", " Q" in doc_e)
+check("legend bar", 'class="legend-bar"' in doc_e
+      and 'class="legend-dot"' in doc_e and "Question / Decision" in doc_e)
+check("inactive edge opacity", 'opacity="0.45"' in doc_e)
+check("bento panel", 'class="bento-grid"' in doc_e
+      and 'id="bentoTitle"' in doc_e and 'class="bento-badge"' in doc_e)
+check("panel position toggle", 'id="panelPosSel"' in doc_e)
+check("root auto-select", 'if(ROOT&&NODES[ROOT])select(ROOT);' in doc_e)
+
+# --- themes ----------------------------------------------------------------------
+doc_dark = core.render_viewer_html("T", nodes, edges)  # default
+check("dark obsidian default", "--bg-canvas:#0e1015" in doc_dark
+      and "--node-active-border:#5c8df6" in doc_dark)
+doc_light = core.render_viewer_html("T", nodes, edges, theme="light")
+check("clean white theme", "--bg-canvas:#ffffff" in doc_light
+      and "--edge-active:#2563eb" in doc_light)
+doc_custom = core.render_viewer_html(
+    "T", nodes, edges, theme="custom",
+    custom_colors={"canvas_bg": "#123456", "edge_color": "#abcdef"})
+check("custom palette", "--bg-canvas:#123456" in doc_custom
+      and "--edge:#abcdef" in doc_custom)
+check("custom falls back sanely",
+      "--bg-canvas:#0e1015" in core.render_viewer_html(
+          "T", nodes, edges, theme="bogus"))
+check("resolve_theme unknown", core.resolve_theme("nope")["bg_canvas"] == "#0e1015")
+
+# --- panel positions ---------------------------------------------------------------
+for p in ("bottom", "top", "left", "right", "hidden"):
+    d = core.render_viewer_html("T", nodes, edges, panel=p)
+    check(f"panel {p}", f'data-panel="{p}"' in d)
+check("bad panel falls back",
+      'data-panel="bottom"' in core.render_viewer_html(
+          "T", nodes, edges, panel="sideways"))
+
+# --- tight bounding box / resizable shell --------------------------------------------
+pos_t, sw_t, sh_t = core.layout(nodes, edges)
+_l = min(x for x, _ in pos_t.values())
+_t = min(y for _, y in pos_t.values())
+_r = max(x + core.NODE_W for x, _ in pos_t.values())
+_b = max(y + core.NODE_H for _, y in pos_t.values())
+check("tight viewBox size", (sw_t, sh_t) == (_r - _l + 24, _b - _t + 37))
+doc_t = core.render_viewer_html("T", nodes, edges)
+check("tight viewBox attr",
+      f'viewBox="{_l - 12} {_t - 12} {sw_t} {sh_t}"' in doc_t)
+check("resizable shell", "resize:both" in doc_dark and "overflow:auto" in doc_dark)
+doc_size = core.render_viewer_html("T", nodes, edges, shell_w=900, shell_h=500)
+check("shell size params", "width:900px" in doc_size and "height:500px" in doc_size)
+check("tight viewBox recalc on drag", "tightViewBox()" in doc_dark)
+
+# --- sharepoint wrapper (unchanged contracts) ------------------------------------------
 frag = core.wrap_sharepoint_html("<div class='ai-widget'>hi</div>", "My Widget")
 check("fragment wrapped", frag.startswith("<!DOCTYPE html>")
       and "My Widget" in frag and "overflow-x:hidden" in frag)
