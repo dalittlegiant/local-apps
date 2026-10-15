@@ -26,6 +26,7 @@ from lib.tmdl_io import (
     build_edit_ops,
     detect_pbip_format,
     parse_tmdl_text,
+    plan_dax_replace,
     read_tmdl_file,
     render_tmdl_text,
     tables_summary,
@@ -107,9 +108,11 @@ def _changed_ops() -> dict[str, list]:
         new_expr = (work.expression if (work.expression or "").strip()
                     != (orig.expression or "").strip() else None)
         new_desc = work.description if work.description != orig.description else None
-        if new_expr is None and new_desc is None:
+        new_name = (work.name if work.kind == "measure"
+                    and work.name != orig.name else None)
+        if new_expr is None and new_desc is None and new_name is None:
             continue
-        ops = build_edit_ops(orig, new_expr, new_desc)
+        ops = build_edit_ops(orig, new_expr, new_desc, new_name)
         if ops:
             fname = orig.id.split("\x1f")[0]
             per_file.setdefault(fname, []).extend(ops)
@@ -180,6 +183,11 @@ with st.container(border=True):
     st.caption(f"Source: `{s['label']}` · mode: {s['mode']} · "
                "edits are staged until you save.")
 
+st.warning("⚠️ **Warning:** Renaming a measure here changes its definition, "
+           "but does **NOT** automatically update other DAX measures that "
+           "reference it. Use the **Global Find & Replace** tool below to "
+           "update dependent formulas before saving.")
+
 # ---- 2. Edit descriptions ----------------------------------------------
 with st.container(border=True):
     st.subheader("② Edit descriptions")
@@ -215,26 +223,93 @@ with st.container(border=True):
     else:
         labels = [f"{o.table} :: {o.name}" for o in measures]
         pick = st.selectbox("Measure", labels, key="tmdl_meas_pick")
-        mobj = measures[labels.index(pick)]
+        midx = labels.index(pick)
+        mobj = measures[midx]
+        # The nonce resets the inputs after a rename / find & replace so the
+        # boxes always reflect the staged values, not stale widget state.
+        nonce = s.setdefault("dax_nonce", 0)
+        new_name = st.text_input(
+            "Measure name",
+            value=mobj.name,
+            key=f"tmdl_name_{midx}_{nonce}",
+            help="Renaming rewrites only the measure's definition line "
+                 "(`measure 'Name' =`). Other measures referencing it are "
+                 "NOT updated — use Global Find & Replace below.")
         # Key includes the measure index so switching measures resets the box
         # to the newly selected DAX instead of showing stale widget state.
         new_dax = st.text_area("DAX expression", value=mobj.expression or "",
-                               height=280, key=f"tmdl_dax_area_{labels.index(pick)}",
+                               height=280, key=f"tmdl_dax_area_{midx}_{nonce}",
                                help="Multi-line DAX is preserved verbatim.")
         for w in validate_dax(new_dax):
             st.warning(f"DAX check: {w}")
         c1, c2 = st.columns([1, 4])
         with c1:
-            if st.button("📌 Stage DAX change", key="tmdl_stage_dax"):
-                mobj.expression = new_dax
-                st.success(f"Staged new DAX for `{mobj.name}`. Save below to write it.")
+            if st.button("📌 Stage name & DAX change", key="tmdl_stage_dax"):
+                clean_name = (new_name or "").strip()
+                dup = any(o is not mobj and o.kind == "measure"
+                          and o.table == mobj.table and o.name == clean_name
+                          for o in objects)
+                if not clean_name:
+                    st.error("Measure name cannot be empty.")
+                elif "]" in clean_name:
+                    st.error("Measure name cannot contain `]` — it would be "
+                             "unreferenceable in DAX.")
+                elif dup:
+                    st.error(f"A measure named `{clean_name}` already exists "
+                             f"in table `{mobj.table}`.")
+                else:
+                    renamed = clean_name != mobj.name
+                    mobj.name = clean_name
+                    mobj.expression = new_dax
+                    s["dax_nonce"] = nonce + 1
+                    what = "name + DAX" if renamed else "DAX"
+                    st.success(f"Staged new {what} for `{clean_name}`. "
+                               "Save below to write it.")
+                    if renamed:
+                        st.rerun()
         with c2:
             if (mobj.expression or "").strip() != (new_dax or "").strip():
-                st.caption("✏️ Unstaged changes in the box above — click **Stage DAX change**.")
+                st.caption("✏️ Unstaged changes in the box above — click "
+                           "**Stage name & DAX change**.")
 
-# ---- 4. Review & save ----------------------------------------------------
+# ---- 4. Global Find & Replace --------------------------------------------
 with st.container(border=True):
-    st.subheader("④ Review & save")
+    st.subheader("④ Global Find & Replace DAX Dependencies")
+    st.caption("Renaming a measure does **not** cascade. Run this **before "
+               "saving** to patch every formula that references the old name. "
+               "Plain substring match (case-sensitive) — include the brackets, "
+               "e.g. find `[Old Measure]`, replace with `[New Measure]`.")
+    fr1, fr2 = st.columns(2)
+    with fr1:
+        find_txt = st.text_input("Find", placeholder="[Old Measure]",
+                                 key="tmdl_fr_find")
+    with fr2:
+        repl_txt = st.text_input("Replace with", placeholder="[New Measure]",
+                                 key="tmdl_fr_repl")
+    if st.button("🔁 Run Replace", key="tmdl_fr_run"):
+        if not (find_txt or "").strip():
+            st.error("Enter the text to find.")
+        else:
+            plans = plan_dax_replace(objects, find_txt, repl_txt or "")
+            if not plans:
+                st.info(f"No measure formulas contain `{find_txt}`.")
+            else:
+                for p in plans:
+                    p["obj"].expression = p["new_expression"]
+                s["dax_nonce"] = s.get("dax_nonce", 0) + 1
+                total_n = sum(p["count"] for p in plans)
+                st.success(
+                    f"Updated {total_n} reference(s) across {len(plans)} "
+                    "measure(s). Review the diffs in §⑤, then save.")
+                with st.expander("Changed measures"):
+                    for p in plans:
+                        st.markdown(f"- `{p['table']} :: {p['name']}` — "
+                                    f"{p['count']} replacement(s)")
+                st.rerun()
+
+# ---- 5. Review & save ----------------------------------------------------
+with st.container(border=True):
+    st.subheader("⑤ Review & save")
     per_file = _changed_ops()
     if not per_file:
         st.success("No staged changes. Edit descriptions or DAX above, then save here.")
@@ -294,7 +369,7 @@ with st.container(border=True):
                 s["objects"] = copy.deepcopy(s["orig"])
                 st.rerun()
 
-# ---- 5. Export ------------------------------------------------------------
+# ---- 6. Export ------------------------------------------------------------
 st.divider()
 all_tables: list[dict] = []
 for f in s["files"].values():
@@ -309,7 +384,7 @@ for f in s["files"].values():
     all_tables.extend(tables_summary(tfile))
 md_text = to_markdown(all_tables, s["label"], f"TMDL ({len(s['files'])} files)")
 with st.container(border=True):
-    st.subheader("⑤ Export data dictionary")
+    st.subheader("⑥ Export data dictionary")
     st.download_button("⬇️ Download Data Dictionary (Markdown)",
                        md_text.encode("utf-8"), "documentation.md",
                        "text/markdown", key="tmdl_dl_md")

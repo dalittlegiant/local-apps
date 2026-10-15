@@ -117,6 +117,7 @@ class ExprLoc:
     decl_line: int = -1
     decl_indent: str = ""
     decl_prefix: str = ""  # text before the DAX on the declaration line
+    decl_dax: str = ""     # DAX text sitting on the declaration line ("" if none)
     dax_start: int = -1
     dax_end: int = -1      # inclusive; inline continuation lines
     cont_indent: str = ""
@@ -134,13 +135,14 @@ class TmdlObject:
     table: str
     kind: str              # "table" | "column" | "measure"
     name: str
-    expression: str | None
-    expr_loc: ExprLoc | None
-    description: str
-    desc_loc: DescLoc | None
-    has_lineage_tag: bool
-    decl_line: int
-    decl_indent: str
+    name_raw: str = ""     # name token exactly as written (quoting style)
+    expression: str | None = None
+    expr_loc: ExprLoc | None = None
+    description: str = ""
+    desc_loc: DescLoc | None = None
+    has_lineage_tag: bool = False
+    decl_line: int = -1
+    decl_indent: str = ""
     child_indent: str = ""  # indent of the first deeper line seen in this object
 
 
@@ -179,9 +181,15 @@ def _finalize(b, source_name) -> TmdlObject | None:
             inl = b["expr_inline"]
             dax_lines = [t for _, t in inl["dax_lines"]]
             expression = "\n".join(dax_lines).strip()
+            # DAX text sitting on the declaration line itself ("" when the
+            # expression starts on a continuation line) — needed to rebuild
+            # the line byte-exactly on rename.
+            decl_dax = (inl["dax_lines"][0][1]
+                        if inl["dax_lines"] and inl["dax_lines"][0][0] == b["decl_line"]
+                        else "")
             expr_loc = ExprLoc(
                 form="inline", decl_line=b["decl_line"], decl_indent=b["decl_indent"],
-                decl_prefix=inl["prefix"],
+                decl_prefix=inl["prefix"], decl_dax=decl_dax,
                 dax_start=inl["dax_lines"][0][0] if dax_lines else -1,
                 dax_end=inl["dax_lines"][-1][0] if dax_lines else -1,
                 cont_indent=inl["cont_indent"],
@@ -218,6 +226,7 @@ def _finalize(b, source_name) -> TmdlObject | None:
     obj_id = "\x1f".join([source_name, b["table"] or "", b["kind"], b["name"]])
     return TmdlObject(
         id=obj_id, table=b["table"] or "", kind=b["kind"], name=b["name"],
+        name_raw=b["name_raw"],
         expression=expression, expr_loc=expr_loc, description=description,
         desc_loc=desc_loc, has_lineage_tag=b["has_lineage_tag"],
         decl_line=b["decl_line"], decl_indent=b["decl_indent"],
@@ -496,8 +505,76 @@ def _desc_ops(obj: TmdlObject, new_desc: str) -> list[LineOp]:
     return ops
 
 
-def _expr_ops(obj: TmdlObject, new_expr: str) -> list[LineOp]:
-    """Build line ops replacing a measure's DAX. Caller guarantees change."""
+def _requote_tmdl_name(new_name: str, old_token: str) -> str:
+    """Quote a new measure name for a declaration line.
+
+    Keeps the original quoting style when possible: a quoted name stays
+    quoted, a bare name stays bare — unless the new name needs quotes
+    (spaces / special characters), in which case it is single-quoted with
+    embedded quotes doubled.
+    """
+    old_quoted = (len(old_token) >= 2 and old_token.startswith("'")
+                  and old_token.endswith("'"))
+    needs_quotes = re.fullmatch(r"[A-Za-z_][\w]*", new_name) is None
+    if needs_quotes or old_quoted:
+        return "'" + new_name.replace("'", "''") + "'"
+    return new_name
+
+
+def _swap_decl_name_token(loc: ExprLoc, obj_name: str,
+                          new_name: str) -> str | None:
+    """Return ``loc.decl_prefix`` with the measure-name token swapped.
+
+    Splits at the LAST ``=`` so names containing ``=`` survive; preserves
+    the exact original spacing around the separator. Returns None when
+    the token cannot be located safely — the caller must skip the rename
+    rather than risk corrupting the line.
+    """
+    m = re.match(r"^measure\s+", loc.decl_prefix)
+    if not m:
+        return None
+    head, body = loc.decl_prefix[:m.end()], loc.decl_prefix[m.end():]
+    if "=" in body:
+        idx = body.rfind("=")
+        pre, post_eq = body[:idx], body[idx:]
+        token = pre.rstrip(" \t")
+        tail = pre[len(token):] + post_eq
+    else:
+        token, tail = body, ""
+    if _unquote_tmdl_name(token) != obj_name:
+        return None
+    return head + _requote_tmdl_name(new_name, token) + tail
+
+
+def _rename_ops(obj: TmdlObject, new_name: str) -> list[LineOp]:
+    """Replace only the name token on the measure's declaration line.
+
+    Indentation, the ``=`` separator, inline DAX, continuation lines and
+    all deeper properties (lineageTag, formatString, …) are untouched.
+    Returns [] when the token cannot be located safely.
+    """
+    loc = obj.expr_loc
+    if loc is not None and loc.form == "inline" and loc.decl_prefix:
+        swapped = _swap_decl_name_token(loc, obj.name, new_name)
+        if swapped is None:
+            return []
+        new_line = loc.decl_indent + swapped + (loc.decl_dax or "")
+        return [LineOp("replace", loc.decl_line, text=[new_line])]
+    # property / block / expression-less form: the declaration line is
+    # exactly `measure <name>` — rebuild it from the indent + new token.
+    new_line = (obj.decl_indent + "measure "
+                + _requote_tmdl_name(new_name, obj.name_raw or obj.name))
+    return [LineOp("replace", obj.decl_line, text=[new_line])]
+
+
+def _expr_ops(obj: TmdlObject, new_expr: str,
+              new_name: str | None = None) -> list[LineOp]:
+    """Build line ops replacing a measure's DAX. Caller guarantees change.
+
+    ``new_name``: when the measure is renamed at the same time, the inline
+    declaration line is rebuilt with the new name token in one op (so the
+    rename and DAX edit never fight over the same line).
+    """
     ops: list[LineOp] = []
     dax_lines = [l.rstrip() for l in new_expr.splitlines()]
     if not dax_lines:
@@ -508,7 +585,8 @@ def _expr_ops(obj: TmdlObject, new_expr: str) -> list[LineOp]:
     if loc is None:
         # Measure with no detectable expression (shouldn't happen): turn the
         # declaration into inline form.
-        prefix = obj.decl_indent + f"measure '{obj.name}' = "
+        tok = _requote_tmdl_name(new_name or obj.name, "")
+        prefix = obj.decl_indent + f"measure {tok} = "
         ops.append(LineOp("replace", obj.decl_line,
                           text=[prefix + dax_lines[0]]))
         if len(dax_lines) > 1:
@@ -520,7 +598,12 @@ def _expr_ops(obj: TmdlObject, new_expr: str) -> list[LineOp]:
     if loc.form == "inline":
         # Normalize to exactly one space after '=' (the regex may have eaten
         # the original trailing space when the DAX lived on later lines).
-        new_decl = (loc.decl_indent + loc.decl_prefix.rstrip() + " "
+        prefix = loc.decl_prefix
+        if new_name is not None and new_name != obj.name:
+            swapped = _swap_decl_name_token(loc, obj.name, new_name)
+            if swapped is not None:
+                prefix = swapped
+        new_decl = (loc.decl_indent + prefix.rstrip() + " "
                     + dax_lines[0]).rstrip()
         ops.append(LineOp("replace", loc.decl_line, text=[new_decl]))
         if loc.dax_start != -1:
@@ -549,15 +632,54 @@ def _expr_ops(obj: TmdlObject, new_expr: str) -> list[LineOp]:
 
 def build_edit_ops(obj: TmdlObject,
                    new_expression: str | None,
-                   new_description: str | None) -> list[LineOp]:
-    """Diff one object against its parsed state -> line ops (may be empty)."""
+                   new_description: str | None,
+                   new_name: str | None = None) -> list[LineOp]:
+    """Diff one object against its parsed state -> line ops (may be empty).
+
+    ``new_name`` renames a measure: only the name token on the declaration
+    line is replaced (indentation, ``=``, DAX and deeper properties are
+    untouched). When the DAX changes too on an inline measure, the single
+    declaration-line op carries both edits so they never overlap.
+    """
     ops: list[LineOp] = []
     if new_description is not None and new_description != obj.description:
         ops.extend(_desc_ops(obj, new_description))
-    if (new_expression is not None and obj.kind == "measure"
-            and new_expression.strip() != (obj.expression or "").strip()):
-        ops.extend(_expr_ops(obj, new_expression))
+    expr_changing = (new_expression is not None and obj.kind == "measure"
+                     and new_expression.strip() != (obj.expression or "").strip())
+    renaming = (new_name is not None and obj.kind == "measure"
+                and new_name != obj.name)
+    inline_decl_rebuilt = (renaming and expr_changing
+                           and obj.expr_loc is not None
+                           and obj.expr_loc.form == "inline")
+    if renaming and not inline_decl_rebuilt:
+        ops.extend(_rename_ops(obj, new_name))
+    if expr_changing:
+        ops.extend(_expr_ops(obj, new_expression,
+                             new_name if inline_decl_rebuilt else None))
     return ops
+
+
+def plan_dax_replace(objects: list[TmdlObject], find: str,
+                     replace: str) -> list[dict]:
+    """Plan a global DAX find & replace.
+
+    Returns [{"obj", "table", "name", "count", "new_expression"}] for every
+    measure whose expression contains ``find`` (plain substring,
+    case-sensitive). Does not mutate the objects — the caller applies
+    ``new_expression`` to ``obj.expression``.
+    """
+    plans: list[dict] = []
+    if not find:
+        return plans
+    for o in objects:
+        if o.kind != "measure" or not o.expression:
+            continue
+        count = o.expression.count(find)
+        if count:
+            plans.append({"obj": o, "table": o.table, "name": o.name,
+                          "count": count,
+                          "new_expression": o.expression.replace(find, replace)})
+    return plans
 
 
 def apply_line_ops(lines: list[str], ops: list[LineOp]) -> list[str]:

@@ -72,6 +72,18 @@ lines, BOM, `\r\n` vs `\n`, trailing newline — is preserved byte-for-byte
 - **Description shapes:** `///` block (preferred when both exist),
   `description:` property, absent → a new `///` block is inserted above the
   declaration. Editing an empty description deletes the `///` block/property.
+- **Measure renames:** `build_edit_ops(..., new_name=...)` swaps only the
+  name token on the declaration line (`_swap_decl_name_token` splits at the
+  LAST `=`, preserving the exact separator spacing; quoting style is kept —
+  quoted stays quoted, bare stays bare unless the new name needs quotes).
+  The token is verified against the parsed name first — if it cannot be
+  located safely the rename is skipped rather than risking a corrupt line.
+  When DAX changes too on an inline measure, the single declaration-line op
+  carries both edits so they never overlap. DAX references are NOT
+  cascaded — the UI's Global Find & Replace (`plan_dax_replace`, plain
+  substring over every measure expression) patches dependents before save,
+  and a warning banner says so. Rename validation (page): non-empty, no
+  `]`, no duplicate name in the same table.
 - **DAX display normalization:** continuation lines are per-line stripped
   when parsed (v2 behavior); the file keeps the exact text written on save.
 - **Quoting:** property rewrites preserve the original quoting style
@@ -121,7 +133,7 @@ the page renders the red warning.
 
 ```bash
 cd unified-data-studio
-python3 tests/run_tests.py        # 60+ lib checks, no Streamlit needed
+python3 tests/run_tests.py        # 79 lib checks, no Streamlit needed
 python3 -m py_compile launcher.py pages/*.py lib/*.py
 ```
 
@@ -137,8 +149,10 @@ installed if the pages change.
 
 ## Gotchas for future edits
 
-- The DAX `text_area` key includes the selected measure's index
-  (`tmdl_dax_area_{i}`) — without this, switching measures shows stale DAX.
+- The DAX `text_area` / measure-name keys include the selected measure's
+  index plus a `dax_nonce` (`tmdl_dax_area_{i}_{n}`) — without this,
+  switching measures (or staging a rename / find & replace) shows stale
+  widget state. The nonce bumps on every rename/find-replace staging.
 - `st.data_editor` writes descriptions back into the working objects on
   every rerun by row position; keep the editor DataFrame in parse order.
 - `build_edit_ops` takes the **original** object (it owns the line

@@ -297,4 +297,88 @@ check("bulk edit is idempotent",
       tb.apply_vco_standard(new_v, {"padding": {"top": 8, "bottom": 8,
                                                 "left": 8, "right": 8}})[1] == [])
 
+# --- measure rename: declaration line only, everything else byte-identical
+lines1 = (FIX / "DimCustomer.tmdl").read_text().splitlines()
+before_tags = lineage_lines(lines1)
+m = obj_by(t1.objects, "DimCustomer", "measure", "Total Sales")
+ops = tio.build_edit_ops(m, None, None, "Total Revenue")
+check("rename is a single decl-line op",
+      len(ops) == 1 and ops[0].kind == "replace" and ops[0].line == m.decl_line)
+out = tio.apply_line_ops(lines1, ops)
+check("rename keeps DAX + lineageTag",
+      out[m.decl_line].strip() == "measure 'Total Revenue' = SUM ( FactSales[Amount] )"
+      and lineage_lines(out) == before_tags)
+t1r = tio.parse_tmdl_text("\n".join(out), "x")
+mr = obj_by(t1r.objects, "DimCustomer", "measure", "Total Revenue")
+check("renamed measure re-parses", mr.expression == m.expression
+      and mr.description == m.description)
+check("old name gone", not any(o.name == "Total Sales" and o.kind == "measure"
+                               for o in t1r.objects))
+
+# --- rename a bare (unquoted) name stays bare; quoted name needing quotes
+bare_src = "table T\n\n\tmeasure MyMeasure = 1 + 1\n"
+bt = tio.parse_tmdl_text(bare_src, "b")
+bm = obj_by(bt.objects, "T", "measure", "MyMeasure")
+bout = tio.apply_line_ops(bare_src.splitlines(),
+                           tio.build_edit_ops(bm, None, None, "MyMeasure2"))
+check("bare name stays bare", bout[2].strip() == "measure MyMeasure2 = 1 + 1")
+bout2 = tio.apply_line_ops(bare_src.splitlines(),
+                           tio.build_edit_ops(bm, None, None, "My Measure 2"))
+check("name with space gets quoted", bout2[2].strip() == "measure 'My Measure 2' = 1 + 1")
+
+# --- rename + DAX edit on inline measure: one decl-line op, no overlap
+ytd = obj_by(t1.objects, "DimCustomer", "measure", "Sales YTD")
+ops = tio.build_edit_ops(ytd, "TOTALYTD([Total Revenue], DimDate[Date])",
+                         None, "Sales YTD New")
+decl_ops = [o for o in ops if o.line == ytd.decl_line and o.kind == "replace"]
+check("rename+dax is one decl op", len(decl_ops) == 1)
+out = tio.apply_line_ops(lines1, ops)
+check("rename+dax decl line",
+      out[ytd.decl_line].strip() == "measure 'Sales YTD New' = TOTALYTD([Total Revenue], DimDate[Date])")
+t1r2 = tio.parse_tmdl_text("\n".join(out), "x")
+mr2 = obj_by(t1r2.objects, "DimCustomer", "measure", "Sales YTD New")
+check("rename+dax re-parses",
+      mr2.expression == "TOTALYTD([Total Revenue], DimDate[Date])")
+check("lineageTag untouched by rename+dax", lineage_lines(out) == before_tags)
+
+# --- rename on property-form measure (FactSales Avg Sale)
+lines2 = (FIX / "FactSales.tmdl").read_text().splitlines()
+before_tags2 = lineage_lines(lines2)
+avg = obj_by(t2.objects, "FactSales", "measure", "Avg Sale")
+ops = tio.build_edit_ops(avg, None, None, "Average Sale")
+out = tio.apply_line_ops(lines2, ops)
+t2r = tio.parse_tmdl_text("\n".join(out), "x")
+ar = obj_by(t2r.objects, "FactSales", "measure", "Average Sale")
+check("property-form rename keeps expression", ar.expression == avg.expression)
+check("lineageTag untouched by property rename", lineage_lines(out) == before_tags2)
+
+# --- no-op rename produces no ops
+check("same-name rename is no-op",
+      tio.build_edit_ops(m, None, None, "Total Sales") == [])
+
+# --- global find & replace planning
+plans = tio.plan_dax_replace(t1.objects, "[Total Sales]", "[Total Revenue]")
+check("find/replace finds dependents",
+      len(plans) == 1 and plans[0]["name"] == "Sales YTD" and plans[0]["count"] == 1)
+check("find/replace builds new DAX",
+      plans[0]["new_expression"] == "TOTALYTD (\n[Total Revenue],\nDimDate[Date]\n)")
+check("find/replace empty find is no-op", tio.plan_dax_replace(t1.objects, "", "x") == [])
+check("find/replace no match", tio.plan_dax_replace(t1.objects, "[Nope]", "x") == [])
+# applying the plan + the rename yields a consistent model
+for p in plans:
+    p["obj"].expression = p["new_expression"]
+m2 = obj_by(t1.objects, "DimCustomer", "measure", "Total Sales")
+ytd_mut = obj_by(t1.objects, "DimCustomer", "measure", "Sales YTD")
+ops = tio.build_edit_ops(m2, None, None, "Total Revenue")
+ops += tio.build_edit_ops(obj_by(tio.parse_tmdl_text(
+    "\n".join(lines1), "x").objects, "DimCustomer", "measure", "Sales YTD"),
+    ytd_mut.expression, None)
+out = tio.apply_line_ops(lines1, ops)
+t1f = tio.parse_tmdl_text("\n".join(out), "x")
+check("rename + replaced refs re-parse consistently",
+      obj_by(t1f.objects, "DimCustomer", "measure", "Total Revenue").expression
+      == "SUM ( FactSales[Amount] )"
+      and "[Total Revenue]" in
+      obj_by(t1f.objects, "DimCustomer", "measure", "Sales YTD").expression)
+
 print(f"\nAll {passed} checks passed.")
