@@ -166,6 +166,7 @@ Session prefixes: `ppt4_`, `dd5_`, `san6_`, `pdf7_`.
 | 10 | Prompt & Privacy Hub | `../ai-prompt-privacy-hub/` | `prompt_core.py` — framework prompts, custom templates, reversible masker, repo packer |
 | 11 | Snippet Vault | `../knowledge-snippet-vault/` | `vault_core.py` — SQLite snippets/notes, full-text + tag search, cheat-sheet export |
 | 12 | Data Quality Watchdog | `../data-quality-watchdog/` | `dq_core.py` — health checks, baseline drift compare, report card |
+| 13 | Stlite Sandbox Builder | `../mobile-stlite-sandbox-builder/` | `stlite_core.py` — repo app scanner, multi-file bundler, pinned @stlite/mountable HTML template |
 
 ## Future work
 

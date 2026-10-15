@@ -20,6 +20,7 @@ Shared developer conventions live in [DEVELOPER_GUIDE.md](DEVELOPER_GUIDE.md); e
 | AI Prompt & Privacy Hub | `ai-prompt-privacy-hub/` | Framework prompt builder + custom templates, reversible local PII/schema masker, repo context packer. |
 | Knowledge & Snippet Vault | `knowledge-snippet-vault/` | SQLite code snippet library (DAX/M/Python/R/SQL) + LaTeX study notes, search, cheat-sheet export. |
 | Data Quality Watchdog | `data-quality-watchdog/` | Pre-refresh health checks (dup PK, null spikes, outliers), baseline drift compare, report card + exceptions CSV. |
+| Stlite Sandbox Builder | `mobile-stlite-sandbox-builder/` | Export any app as a standalone WebAssembly HTML (stlite) for offline-ish mobile browsers. |
 
 ## Running an app
 

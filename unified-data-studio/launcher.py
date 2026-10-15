@@ -125,6 +125,9 @@ pg = st.navigation(
             st.Page("../interactive-flowchart-studio/app.py",
                     title="Interactive Flowchart Studio",
                     url_path="flowchart-studio"),
+            st.Page("../mobile-stlite-sandbox-builder/app.py",
+                    title="Stlite Sandbox Builder",
+                    url_path="stlite-sandbox-builder"),
         ],
         "🤝 Project, Meeting & Comms": [
             st.Page("../bi-requirement-meeting-hub/app.py",
