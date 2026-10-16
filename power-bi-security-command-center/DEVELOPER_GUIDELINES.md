@@ -86,6 +86,30 @@ by-user/by-asset, cp1252 (é) encoding fallback.
 
 - The audit log is in-memory — **download the CSV** before closing the browser.
 - Treat `Final_RLS.csv` as sensitive (staff emails) — never commit it.
+- The linked folder is **read-only** — the app never writes into it. Only the
+  link path itself is persisted (`storage/link.json`, gitignored).
+
+## Linked data folder (2026-10-16)
+
+`link_core.py` (Streamlit-free, unit-tested) implements the 📁 Linked data folder:
+`save_link`/`load_link`/`clear_link` persist the folder path to
+`storage/link.json`; `resolve_slot` maps each uploader key to a conventional
+filename (case-insensitive stem match, `.xlsx` preferred over `.csv`); `LinkedFile`
+is a `BytesIO` duck-typing a Streamlit `UploadedFile` so all existing
+`read_table_upload` / `pd.read_excel` call sites work unchanged;
+`pick_source(slot, uploaded, folder)` gives manual uploads precedence over the
+linked file. Slot → filename mapping:
+
+| Slot(s) | Conventional filename |
+|---|---|
+| `rls_hr`, `gap_hr` | `HR Staff List.xlsx` |
+| `rls_rules`, `delta_rules`, `gap_rules` | `Rule_Book.xlsx` / `.csv` |
+| `rls_ex` | `Exceptions.xlsx` / `.csv` |
+| `rls_sm` | `Store_Master.xlsx` / `.csv` |
+| `delta_old` / `delta_new` | `Previous HR List.xlsx` / `New HR List.xlsx` |
+| `audit_load` | `Access_Audit.xlsx` / `.csv` |
+
+Tests live in `tests/run_tests.py` (22 checks, no Streamlit needed).
 
 ## Future work
 

@@ -7,7 +7,9 @@ No Streamlit required. Exits non-zero on the first failure.
 import copy
 import io
 import json
+import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 import pandas as pd
@@ -20,6 +22,7 @@ from lib import csv_loader as cl          # noqa: E402
 from lib import rules_engine as re        # noqa: E402
 from lib import theme_builder as tb       # noqa: E402
 from lib import tmdl_io as tio            # noqa: E402
+import workspace_db as wdb                # noqa: E402
 
 passed = 0
 
@@ -380,5 +383,83 @@ check("rename + replaced refs re-parse consistently",
       == "SUM ( FactSales[Amount] )"
       and "[Total Revenue]" in
       obj_by(t1f.objects, "DimCustomer", "measure", "Sales YTD").expression)
+
+# ================================================================ workspace_db
+# Sandbox the repo-layout detection so link.json / the DB never touch the
+# real repo workspace.
+_tmpws = Path(tempfile.mkdtemp(prefix="wdb_test_"))
+_orig_repo_ws = wdb._repo_workspace_dir
+wdb._repo_workspace_dir = lambda: _tmpws
+try:
+    # --- linked folder round-trip
+    _linkdir = _tmpws / "linked"
+    _eff = wdb.set_linked_folder(str(_linkdir))
+    check("set_linked_folder returns target",
+          _eff == _linkdir / "workspace_master.db")
+    check("resolve_db_path follows link",
+          wdb.resolve_db_path() == _linkdir / "workspace_master.db")
+    check("link file written", wdb.link_file().exists())
+    wdb.clear_linked_folder()
+    check("clear_linked_folder removes link",
+          not wdb.link_file().exists())
+    check("resolve_db_path falls back to default",
+          wdb.resolve_db_path() == _tmpws / "workspace_master.db")
+    try:
+        wdb.set_linked_folder("   ")
+        check("set_linked_folder rejects empty", False)
+    except ValueError:
+        check("set_linked_folder rejects empty", True)
+
+    # --- seed data, then link: existing DB must be copied, not lost
+    _con = wdb.open_workspace()
+    _con.execute("INSERT INTO snippets (title, language, code, created_at,"
+                 " updated_at) VALUES (?,?,?,?,?)",
+                 ("Seed", "Python", "x = 1", "t", "t"))
+    _con.commit()
+    check("record_counts snippets",
+          wdb.record_counts(_con)["snippets"] == 1)
+    wdb.set_linked_folder(str(_linkdir))  # copies current DB over
+    _con.close()
+    _con2 = wdb.connect()
+    check("linked DB keeps existing data",
+          wdb.record_counts(_con2)["snippets"] == 1)
+    _con2.close()
+
+    # --- backup / restore round-trip
+    _blob = wdb.backup_bytes()
+    check("backup magic", _blob[:16] == b"SQLite format 3\x00")
+    wdb.resolve_db_path().unlink()  # simulate a lost DB
+    _installed = wdb.restore_bytes(_blob)
+    check("restore installs at resolved path",
+          _installed == wdb.resolve_db_path())
+    _con3 = wdb.connect()
+    check("restore round-trip keeps rows",
+          wdb.record_counts(_con3)["snippets"] == 1)
+    _con3.close()
+    # second restore with the target present -> auto-backup beside it
+    wdb.restore_bytes(_blob)
+    _backups = list(_tmpws.glob("linked/workspace_master.backup-*.db"))
+    check("restore auto-backs-up current DB", len(_backups) == 1)
+
+    # --- restore rejects junk and wrong-schema files
+    try:
+        wdb.restore_bytes(b"this is not a database")
+        check("restore rejects junk", False)
+    except ValueError:
+        check("restore rejects junk", True)
+    _bad = _tmpws / "bad.db"
+    import sqlite3 as _sq
+    _c0 = _sq.connect(str(_bad))
+    _c0.execute("CREATE TABLE unrelated (a)")
+    _c0.commit()
+    _c0.close()
+    try:
+        wdb.restore_bytes(_bad.read_bytes())
+        check("restore rejects missing tables", False)
+    except ValueError:
+        check("restore rejects missing tables", True)
+finally:
+    wdb._repo_workspace_dir = _orig_repo_ws
+    shutil.rmtree(_tmpws, ignore_errors=True)
 
 print(f"\nAll {passed} checks passed.")

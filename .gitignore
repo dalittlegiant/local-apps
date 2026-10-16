@@ -13,6 +13,7 @@ venv/
 *.parquet
 data/
 storage/
+workspace/
 
 # BI project artifacts: never commit real models or credentials
 *.bim

@@ -2,11 +2,17 @@
 
 SQLite-backed requirement triage: capture, filter/edit, and one-click
 meeting-minutes generation (Markdown / Email / Teams).
+
+Storage is the central workspace DB (``workspace_master.db``) via
+``workspace_db.open_workspace()`` — the legacy ``storage/meetings.db``
+is imported once on first run and then left untouched.
 """
 
 import sqlite3
 from datetime import datetime
 from pathlib import Path
+
+import workspace_db
 
 ACTION_TYPES = ("Change", "Remove", "Suggestion", "To Confirm")
 FEASIBILITY = ("Pending Data Check", "Feasible (Confirmed)",
@@ -29,14 +35,18 @@ CREATE TABLE IF NOT EXISTS requirements (
 """
 
 
-def db_path() -> Path:
-    p = Path(__file__).resolve().parent / "storage"
-    p.mkdir(exist_ok=True)
-    return p / "meetings.db"
-
-
 def connect(path: Path | None = None) -> sqlite3.Connection:
-    path = Path(path) if path else db_path()
+    """Connect to the requirements store.
+
+    Default (``path=None``): the central workspace DB — resolves
+    ``<repo>/workspace/workspace_master.db``, inits the schema, and
+    one-time imports legacy ``storage/meetings.db`` rows (idempotent).
+    Explicit ``path``: standalone SQLite file, used by tests with a temp
+    DB so they never touch real storage.
+    """
+    if path is None:
+        return workspace_db.open_workspace(Path(__file__).resolve().parent)
+    path = Path(path)
     con = sqlite3.connect(path, check_same_thread=False)
     con.row_factory = sqlite3.Row
     con.execute(SCHEMA)

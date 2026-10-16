@@ -196,3 +196,18 @@ Session prefixes: `ppt4_`, `dd5_`, `san6_`, `pdf7_`.
 previous extraction on each new load and offers a "Clear temporary files" button;
 the theme page deletes its temp dir in a `finally` right after parsing; both sweep
 stale dirs at page start.
+
+### Central workspace database (2026-10-16)
+
+`workspace_db.py` (repo root copy lives here; identical copies in
+`knowledge-snippet-vault/`, `bi-requirement-meeting-hub/`,
+`ai-prompt-privacy-hub/` — canonical copy is the vault's, edit there first and
+sync) owns the single `workspace_master.db`: snippets, notes, requirements,
+prompt_templates, mask_map, app_meta. Resolution: `link.json` override →
+`<repo>/workspace/` → `./workspace_master.db` fallback. Apps call
+`open_workspace(app_dir)` which inits the schema and one-time-imports legacy
+storage (idempotent, flagged in `app_meta`). `pages/workspace_manager.py`
+(💾 Workspace Data Manager, `wsm_` prefix) is the control plane: live record
+counts, linked-folder set/clear, timestamped backup download, validated restore
+(auto-backs-up the current DB first). Never point two different `link.json`
+files at each other's DBs; never hand-edit the DB while an app holds it open.

@@ -15,10 +15,14 @@ Run with: streamlit run app.py
 """
 
 import io
-from datetime import date
+from datetime import date, datetime
+from pathlib import Path
 
 import pandas as pd
 import streamlit as st
+
+import link_core
+from link_core import _clean_str_df, read_table_upload
 
 
 st.set_page_config(
@@ -50,42 +54,6 @@ def _require_cols(df: pd.DataFrame, cols: list[str], label: str) -> None:
     missing = [c for c in cols if c not in df.columns]
     if missing:
         raise ValueError(f"{label} is missing columns: {', '.join(missing)}")
-
-
-def _clean_str_df(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.fillna("")
-    for c in df.columns:
-        df[c] = df[c].astype(str).str.strip()
-    return df
-
-
-def read_csv_bytes(raw: bytes) -> tuple[pd.DataFrame, str]:
-    """Robust CSV reader. Tries utf-8-sig first (handles BOM + most files),
-    then plain utf-8, then cp1252 (covers é/ü-style Latin characters that
-    break utf-8 decoding), with latin-1 as the final safety net."""
-    for enc in ("utf-8-sig", "utf-8", "cp1252"):
-        try:
-            return pd.read_csv(io.BytesIO(raw), dtype=str, encoding=enc), enc
-        except (UnicodeDecodeError, UnicodeError):
-            continue
-    return pd.read_csv(io.BytesIO(raw), dtype=str, encoding="latin-1"), "latin-1"
-
-
-def read_table_upload(uploaded) -> pd.DataFrame:
-    """Read a CSV or Excel upload into a cleaned string dataframe.
-
-    Excel uploads (.xlsx/.xls) sidestep CSV encoding issues entirely.
-    The detected encoding is stored on df.attrs['source_encoding'].
-    """
-    name = uploaded.name.lower()
-    if name.endswith((".xlsx", ".xls")):
-        df = pd.read_excel(uploaded, dtype=str)
-        enc = "excel"
-    else:
-        df, enc = read_csv_bytes(uploaded.getvalue())
-    df = _clean_str_df(df)
-    df.attrs["source_encoding"] = enc
-    return df
 
 
 def read_hr_excel(uploaded, mapping: dict[str, str]) -> pd.DataFrame:
@@ -498,6 +466,10 @@ Needs the RLS Engine to have run at least once (it queries the latest `Final_RLS
     st.markdown(
         """
 - **Weird characters crash?** Save the file as `.xlsx` and re-upload — Excel sidesteps CSV encoding entirely.
+- **Tired of re-uploading every month?** Use the **📁 Linked data folder** panel at the top of the
+  🛠️ Workspace: point it at a folder holding `HR Staff List.xlsx`, `Rule_Book.xlsx`, `Store_Master.xlsx`,
+  etc. and the app auto-loads them on startup. A manual upload always overrides the linked file
+  for that slot; the 🔄 Reload button re-reads the folder so the latest versions are used.
 - **HR renamed their columns?** Update the three ⚙️ Schema Mapping fields in the sidebar; don't touch the code.
 - **"NO RULE" rows?** Add the missing (`Department`, `Position`) combination to the Rule Book,
       or add a `*` wildcard row for that position.
@@ -514,6 +486,62 @@ if page == "📖 How to Use":
 
 st.title("🛡️ Power BI Security & Governance Command Center")
 st.caption("Local-only RLS engine · delta tracking · access audit · query tool. Nothing leaves this machine.")
+
+
+# ----------------------------------------------- linked data folder --
+linked_folder = link_core.load_link()
+
+with st.expander("📁 Linked data folder", expanded=not linked_folder):
+    st.caption(
+        "Point at a folder holding your living reference files and the app "
+        "auto-loads them on startup — no more re-uploading every month. "
+        "Expected filenames: `HR Staff List.xlsx`, `Rule_Book.xlsx`/`.csv`, "
+        "`Exceptions.xlsx`, `Store_Master.xlsx`, `Previous HR List.xlsx`, "
+        "`New HR List.xlsx`, `Access_Audit.xlsx`/`.csv`. "
+        "A manual upload always overrides the linked file for that slot. "
+        "The folder is only ever read, never written to."
+    )
+    new_folder = st.text_input("Local folder path", value=linked_folder or "",
+                               key="link_path",
+                               placeholder=r"C:\Governance\Data  or  /home/user/governance")
+    b1, b2 = st.columns(2)
+    with b1:
+        if st.button("🔗 Link folder", key="link_go"):
+            try:
+                linked_folder = link_core.save_link(new_folder)
+                st.success(f"Linked: {linked_folder}")
+                st.rerun()
+            except ValueError as e:
+                st.error(f"⚠️ {e}")
+    with b2:
+        if st.button("✖️ Unlink", key="link_clear", disabled=not linked_folder):
+            link_core.clear_link()
+            linked_folder = None
+            st.success("Folder unlinked.")
+            st.rerun()
+    if linked_folder and not Path(linked_folder).is_dir():
+        st.warning(f"⚠️ Linked folder no longer exists: {linked_folder}")
+
+
+def _linked_status(slot_keys: list[str], reload_key: str) -> None:
+    """Per-tab status line: which slots auto-loaded from the linked folder."""
+    if not linked_folder or not Path(linked_folder).is_dir():
+        return
+    found = link_core.scan_folder(linked_folder)
+    bits = []
+    for k in slot_keys:
+        stem, _ = link_core.LINKED_SLOTS[k]
+        p = found.get(k)
+        if p:
+            mtime = datetime.fromtimestamp(p.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
+            bits.append(f"✅ `{p.name}` ({mtime})")
+        else:
+            bits.append(f"⚪ `{stem}.*` — not found")
+    st.caption("📁 Linked: `" + linked_folder + "`  ·  " + " · ".join(bits))
+    if st.button("🔄 Reload linked files", key=reload_key,
+                 help="Re-read the linked folder so the latest file versions are used."):
+        st.rerun()
+
 
 tab_rls, tab_delta, tab_audit, tab_query = st.tabs(
     ["🔐 RLS Engine", "🔄 Delta Tracking", "📋 Access Audit & Gap Analysis",
@@ -535,6 +563,7 @@ with tab_rls:
 
     with st.container(border=True):
         st.subheader("📤 Inputs")
+        _linked_status(["rls_hr", "rls_rules", "rls_ex", "rls_sm"], "rls_reload")
         c1, c2 = st.columns(2)
         with c1:
             hr_up = st.file_uploader("HR Staff List (.xlsx)", type=["xlsx", "xls"], key="rls_hr")
@@ -563,21 +592,27 @@ with tab_rls:
                 "text/csv",
             )
 
+        hr_src = link_core.pick_source("rls_hr", hr_up, linked_folder)
+        rules_src = link_core.pick_source("rls_rules", rules_up, linked_folder)
+        ex_src = link_core.pick_source("rls_ex", ex_up, linked_folder)
+        sm_src = link_core.pick_source("rls_sm", sm_up, linked_folder)
+
         if st.button("▶️ Simulate & Combine", type="primary", key="rls_go"):
-            if not hr_up or not rules_up:
-                st.error("Please upload both the HR Staff List and the Rule_Book.")
+            if not hr_src or not rules_src:
+                st.error("Please provide both the HR Staff List and the Rule_Book "
+                         "(upload them or link a data folder above).")
             else:
                 try:
-                    hr = read_hr_excel(hr_up, schema_mapping)
-                    rules = read_table_upload(rules_up)
-                    ex = read_table_upload(ex_up) if ex_up else None
-                    sm = read_table_upload(sm_up) if sm_up else None
+                    hr = read_hr_excel(hr_src, schema_mapping)
+                    rules = read_table_upload(rules_src)
+                    ex = read_table_upload(ex_src) if ex_src else None
+                    sm = read_table_upload(sm_src) if sm_src else None
                     new_pos, new_dept = check_unmapped_master_data(hr, rules)
                     warn_unmapped(new_pos, new_dept)
                     final, warns = simulate_rls(hr, rules, ex, sm)
                     st.session_state["final_rls"] = final
                     st.session_state["hr_current"] = hr
-                    st.session_state["hr_current_name"] = hr_up.name
+                    st.session_state["hr_current_name"] = hr_src.name
                     st.session_state["store_master_current"] = sm
                     for w in warns:
                         st.warning(w)
@@ -613,6 +648,7 @@ with tab_delta:
 
     with st.container(border=True):
         st.subheader("📤 Inputs")
+        _linked_status(["delta_old", "delta_new", "delta_rules"], "delta_reload")
         d1, d2, d3 = st.columns(3)
         with d1:
             old_up = st.file_uploader("Previous HR List (.xlsx)", type=["xlsx", "xls"], key="delta_old")
@@ -621,21 +657,26 @@ with tab_delta:
         with d3:
             delta_rules_up = st.file_uploader("Rule_Book (.csv / .xlsx)", type=["csv", "xlsx", "xls"], key="delta_rules")
 
+        old_src = link_core.pick_source("delta_old", old_up, linked_folder)
+        new_src = link_core.pick_source("delta_new", new_up, linked_folder)
+        delta_rules_src = link_core.pick_source("delta_rules", delta_rules_up, linked_folder)
+
         if st.button("🔍 Compare", type="primary", key="delta_go"):
-            if not old_up or not new_up:
-                st.error("Please upload both the previous and the new HR list.")
+            if not old_src or not new_src:
+                st.error("Please provide both the previous and the new HR list "
+                         "(upload them or link a data folder above).")
             else:
                 try:
-                    old = read_hr_excel(old_up, schema_mapping)
-                    new = read_hr_excel(new_up, schema_mapping)
-                    rules = read_table_upload(delta_rules_up) if delta_rules_up else None
+                    old = read_hr_excel(old_src, schema_mapping)
+                    new = read_hr_excel(new_src, schema_mapping)
+                    rules = read_table_upload(delta_rules_src) if delta_rules_src else None
                     sm = st.session_state["store_master_current"]
                     if rules is not None:
                         warn_unmapped(*check_unmapped_master_data(new, rules))
                     res = compute_deltas(old, new, rules, sm)
                     st.session_state["delta_res"] = res
                     st.session_state["hr_current"] = new
-                    st.session_state["hr_current_name"] = new_up.name
+                    st.session_state["hr_current_name"] = new_src.name
                 except ValueError as e:
                     st.error(f"⚠️ {e}")
                 except Exception as e:
@@ -719,11 +760,13 @@ with tab_audit:
                     "text/csv",
                 )
             with c2:
+                _linked_status(["audit_load"], "audit_reload")
                 audit_up = st.file_uploader("…or load an existing Access_Audit (.csv / .xlsx)",
                                             type=["csv", "xlsx", "xls"], key="audit_load")
-                if audit_up:
+                audit_src = link_core.pick_source("audit_load", audit_up, linked_folder)
+                if audit_src:
                     try:
-                        loaded = read_table_upload(audit_up)
+                        loaded = read_table_upload(audit_src)
                         _require_cols(loaded, ["Date", EMAIL, "Asset_Name", "Permission_Level"], "Access_Audit")
                         if "Remark" not in loaded.columns:
                             loaded["Remark"] = ""
@@ -742,22 +785,26 @@ with tab_audit:
 
     with st.container(border=True):
         st.subheader("🔎 Gap Analysis")
+        _linked_status(["gap_hr", "gap_rules"], "gap_reload")
         g1, g2 = st.columns(2)
         with g1:
             gap_hr_up = st.file_uploader("Current HR List (.xlsx)", type=["xlsx", "xls"], key="gap_hr")
         with g2:
             gap_rules_up = st.file_uploader("Rule_Book (.csv / .xlsx)", type=["csv", "xlsx", "xls"], key="gap_rules")
 
+        gap_hr_src = link_core.pick_source("gap_hr", gap_hr_up, linked_folder)
+        gap_rules_src = link_core.pick_source("gap_rules", gap_rules_up, linked_folder)
+
         # Default to the HR list already in session (from RLS or Delta tabs).
         if st.button("Run Gap Analysis", type="primary", key="gap_go"):
             try:
-                hr = read_hr_excel(gap_hr_up, schema_mapping) if gap_hr_up else st.session_state["hr_current"]
+                hr = read_hr_excel(gap_hr_src, schema_mapping) if gap_hr_src else st.session_state["hr_current"]
                 if hr is None:
                     st.error("Upload a current HR list (or run the RLS / Delta tab first).")
-                elif not gap_rules_up:
-                    st.error("Please upload the Rule_Book.")
+                elif not gap_rules_src:
+                    st.error("Please provide the Rule_Book (upload it or link a data folder above).")
                 else:
-                    rules = read_table_upload(gap_rules_up)
+                    rules = read_table_upload(gap_rules_src)
                     sm = st.session_state["store_master_current"]
                     warn_unmapped(*check_unmapped_master_data(hr, rules))
                     expected, warns = simulate_rls(hr, rules, None, sm)

@@ -9,6 +9,8 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 
+import workspace_db  # same dir; app.py/tests put the app dir on sys.path
+
 LANGUAGES = ("DAX", "Power Query (M)", "Python", "R", "SQL")
 
 SCHEMA = """
@@ -34,13 +36,23 @@ CREATE TABLE IF NOT EXISTS notes (
 
 
 def db_path() -> Path:
-    p = Path(__file__).resolve().parent / "storage"
-    p.mkdir(exist_ok=True)
-    return p / "vault.db"
+    """Effective database path — the central workspace DB (see
+    ``workspace_db.resolve_db_path``). The old ``storage/vault.db`` is only
+    read once, during the one-time legacy import."""
+    return workspace_db.resolve_db_path()
 
 
 def connect(path: Path | None = None) -> sqlite3.Connection:
-    path = Path(path) if path else db_path()
+    """Connect to the vault store.
+
+    No path → the central workspace DB via
+    ``workspace_db.open_workspace`` (schema init + one-time legacy import
+    from ``storage/vault.db`` run automatically). Explicit path → an
+    isolated DB at that path (used by tests and fixtures).
+    """
+    if path is None:
+        return workspace_db.open_workspace(Path(__file__).resolve().parent)
+    path = Path(path)
     con = sqlite3.connect(path, check_same_thread=False)
     con.row_factory = sqlite3.Row
     con.executescript(SCHEMA)

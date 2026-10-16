@@ -96,4 +96,52 @@ mins0 = core.generate_minutes([], "nothing")
 check("empty minutes", mins0["counts"]["confirmed"] == 0
       and "0 item(s)" in mins0["markdown"])
 
+# --- central workspace DB -------------------------------------------------
+import workspace_db  # noqa: E402
+
+# Isolate the central DB location so these checks never touch real storage.
+_tmp_ws = Path(tempfile.mkdtemp())
+_orig_repo_ws = workspace_db._repo_workspace_dir
+workspace_db._repo_workspace_dir = lambda: _tmp_ws  # noqa: E731
+
+# legacy app dir with a pre-existing meetings.db
+fake_app = Path(tempfile.mkdtemp()) / "bi-requirement-meeting-hub"
+(fake_app / "storage").mkdir(parents=True)
+lcon = core.connect(fake_app / "storage" / "meetings.db")
+core.add_requirement(lcon, "Legacy Proj", "2026-01-05", "Zed", "Change",
+                     "Completed", "Legacy title", "legacy detail", "")
+core.add_requirement(lcon, "Legacy Proj", "2026-01-06", "Yara", "Suggestion",
+                     "Pending Data Check", "Legacy idea", "", "")
+lcon.close()
+
+wcon = workspace_db.open_workspace(fake_app)
+got = core.list_requirements(wcon, project="Legacy Proj")
+check("legacy import rows", len(got) == 2)
+check("legacy import content",
+      got[0]["title"] == "Legacy idea" and got[1]["title"] == "Legacy title")
+check("legacy ids preserved", sorted(r["id"] for r in got) == [1, 2])
+
+# idempotent — a second open must not duplicate
+wcon_b = workspace_db.open_workspace(fake_app)
+check("import idempotent",
+      len(core.list_requirements(wcon_b, project="Legacy Proj")) == 2)
+wcon_b.close()
+
+# update round-trip on the central DB
+core.update_requirement(wcon, 1, {"feasibility_status": "Completed",
+                                  "title": "Legacy title v2"})
+r = core.list_requirements(wcon, project="Legacy Proj")
+check("central update round-trip",
+      r[1]["title"] == "Legacy title v2"
+      and r[1]["feasibility_status"] == "Completed")
+
+# core.connect() with no path delegates to the central DB
+ccon = core.connect()
+check("connect() delegates central",
+      ccon.execute("SELECT COUNT(*) FROM requirements").fetchone()[0] == 2)
+ccon.close()
+wcon.close()
+
+workspace_db._repo_workspace_dir = _orig_repo_ws
+
 print(f"\nAll {passed} checks passed.")

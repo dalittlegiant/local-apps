@@ -15,6 +15,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import prompt_core as core  # noqa: E402
+import workspace_db as wdb  # noqa: E402
 
 try:
     import streamlit as st
@@ -27,6 +28,16 @@ except Exception:
     pass  # running inside the suite launcher — page config owned by launcher.py
 
 P = "pp10_"
+
+
+def _con():
+    """Central workspace DB connection, opened once (init + one-time
+    legacy JSON import) and cached in session state."""
+    if P + "con" not in st.session_state:
+        st.session_state[P + "con"] = wdb.open_workspace(
+            Path(__file__).parent)
+    return st.session_state[P + "con"]
+
 
 st.title("🧠 AI Prompt & Privacy Hub")
 st.caption("Write high-precision prompts systematically — and sanitize "
@@ -64,12 +75,12 @@ with tab_build:
                                  key=P + "tbody")
             if st.button("💾 Save template", key=P + "tsave"):
                 try:
-                    core.save_custom_template(tname, tbody)
+                    core.save_custom_template(tname, tbody, con=_con())
                     st.success(f"Saved '{tname}'.")
                     st.rerun()
                 except ValueError as e:
                     st.error(f"⚠️ {e}")
-        customs = core.load_custom_templates()
+        customs = core.load_custom_templates(con=_con())
         if customs:
             sel = st.selectbox("Template", list(customs.keys()), key=P + "tsel")
             body = customs[sel]
@@ -85,8 +96,30 @@ with tab_build:
                     st.session_state[P + "custom_out"] = filled
             with c2:
                 if st.button("🗑️ Delete template", key=P + "tdel"):
-                    core.delete_custom_template(sel)
+                    core.delete_custom_template(sel, con=_con())
                     st.rerun()
+            with st.expander("✏️ Edit this template"):
+                # sel-scoped keys so switching templates reloads the fields
+                ename = st.text_input("Template name", value=sel,
+                                      key=P + f"ename_{sel}")
+                ebody = st.text_area("Body — use {variables} for fill-ins",
+                                     value=body, height=120,
+                                     key=P + f"ebody_{sel}")
+                if st.button("💾 Save changes", key=P + f"tedit_{sel}"):
+                    try:
+                        new_name = ename.strip()
+                        if not new_name or not ebody.strip():
+                            raise ValueError(
+                                "Template name and body are required.")
+                        if new_name != sel:
+                            # rename = delete old row, upsert under new name
+                            core.delete_custom_template(sel, con=_con())
+                            st.session_state.pop(P + "tsel", None)
+                        core.save_custom_template(new_name, ebody, con=_con())
+                        st.success(f"Updated '{new_name}'.")
+                        st.rerun()
+                    except ValueError as e:
+                        st.error(f"⚠️ {e}")
             out = st.session_state.get(P + "custom_out")
             if out:
                 st.code(out, language="markdown")
@@ -129,7 +162,7 @@ with tab_mask:
                     [s for s in stores.splitlines() if s.strip()],
                     [s for s in metrics.splitlines() if s.strip()])
                 st.session_state[P + "masked"] = (masked, mapping)
-                core.save_mapping(mapping)
+                core.save_mapping(mapping, con=_con())
         res = st.session_state.get(P + "masked")
         if res:
             masked, mapping = res
@@ -138,23 +171,23 @@ with tab_mask:
                 st.code(masked, language="text")
                 st.subheader("Mapping dictionary (stored locally)")
                 st.json(mapping)
-                st.caption("Mapping auto-saved to storage/mask_map.json — "
-                           "the Unmask tab reads it back. The file holds the "
+                st.caption("Mapping auto-saved to the central workspace DB — "
+                           "the Unmask tab reads it back. The rows hold the "
                            "original names in plaintext on this machine only.")
-                if st.button("🧹 Clear Local Mask Dictionary (mask_map.json)",
+                if st.button("🧹 Clear Local Mask Dictionary (central DB)",
                              key=P + "clear_map",
                              help="Permanently deletes the local {token: "
-                                  "original} mapping file."):
-                    if core.clear_mapping():
+                                  "original} rows from the workspace DB."):
+                    if core.clear_mapping(con=_con()):
                         st.success("Local mask dictionary deleted.")
                     else:
-                        st.info("No local mask dictionary file exists.")
+                        st.info("No local mask dictionary rows exist.")
                     st.rerun()
     else:
         with st.container(border=True):
             ai_out = st.text_area("Paste the AI's response / code", height=160,
                                   key=P + "ai_out")
-            mapping = core.load_mapping()
+            mapping = core.load_mapping(con=_con())
             if not mapping:
                 st.subheader("📭 No mapping saved yet")
                 st.markdown("1. Switch to the **Mask** tab and mask a snippet first.\n"

@@ -18,6 +18,7 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import meeting_core as core  # noqa: E402
+import workspace_db  # noqa: E402
 
 try:
     import streamlit as st
@@ -36,7 +37,8 @@ EDIT_COLS = ["id", "project", "meeting_date", "stakeholder", "action_type",
 
 def _con():
     if P + "con" not in st.session_state:
-        st.session_state[P + "con"] = core.connect()
+        st.session_state[P + "con"] = workspace_db.open_workspace(
+            Path(__file__).resolve().parent)
     return st.session_state[P + "con"]
 
 

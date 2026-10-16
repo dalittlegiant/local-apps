@@ -17,6 +17,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import vault_core as core  # noqa: E402
+import workspace_db  # noqa: E402
 
 try:
     import streamlit as st
@@ -35,13 +36,14 @@ FENCE = {"DAX": "dax", "Power Query (M)": "powerquery", "Python": "python",
 
 def _con():
     if P + "con" not in st.session_state:
-        st.session_state[P + "con"] = core.connect()
+        st.session_state[P + "con"] = workspace_db.open_workspace(
+            Path(__file__).resolve().parent)
     return st.session_state[P + "con"]
 
 
 st.title("📚 Knowledge & Snippet Vault")
-st.caption("Your local SQLite-backed library for reusable code and study "
-           "notes — LaTeX included.")
+st.caption("Your local library for reusable code and study notes — LaTeX "
+           "included. Records live in the central workspace database.")
 
 tab_snip, tab_notes, tab_search, tab_export = st.tabs(
     ["💻 Code Snippets", "📝 Study Notes", "🔍 Search", "📦 Export"])
@@ -63,6 +65,42 @@ with tab_snip:
                 st.rerun()
             except ValueError as e:
                 st.error(f"⚠️ {e}")
+
+    # Prominent resume panel — the per-record ✏️ Edit buttons also live
+    # inside each expander below, but they are easy to miss when collapsed.
+    _all_snips = core.search(_con())["snippets"]
+    with st.container(border=True):
+        st.subheader("📂 Resume / edit a snippet")
+        if not _all_snips:
+            st.caption("No snippets saved yet — save one above first.")
+        else:
+            rsel = st.selectbox(
+                "Pick a snippet to resume editing",
+                [_s["id"] for _s in _all_snips],
+                format_func=lambda _i: next(
+                    f"[{_s['language']}] {_s['title']}" for _s in _all_snips
+                    if _s["id"] == _i),
+                key=P + "resume_snip")
+            rs = next(_s for _s in _all_snips if _s["id"] == rsel)
+            rt = st.text_input("Title", value=rs["title"],
+                               key=P + f"rt_{rs['id']}")
+            rl = st.selectbox("Language", core.LANGUAGES,
+                              index=core.LANGUAGES.index(rs["language"]),
+                              key=P + f"rl_{rs['id']}")
+            rc = st.text_area("Code", value=rs["code"], height=160,
+                              key=P + f"rc_{rs['id']}")
+            rx = st.text_area("Context", value=rs["context_notes"] or "",
+                              key=P + f"rx_{rs['id']}")
+            rg = st.text_input("Tags", value=rs["tags"] or "",
+                               key=P + f"rg_{rs['id']}")
+            if st.button("💾 Save changes", type="primary",
+                         key=P + f"rsv_{rs['id']}"):
+                core.update_snippet(_con(), rs["id"],
+                                    {"title": rt, "language": rl,
+                                     "code": rc, "context_notes": rx,
+                                     "tags": rg})
+                st.success("Snippet updated.")
+                st.rerun()
 
     with st.container(border=True):
         f1, f2 = st.columns(2)
@@ -135,6 +173,34 @@ with tab_notes:
                 st.rerun()
             except ValueError as e:
                 st.error(f"⚠️ {e}")
+
+    # Prominent resume panel — mirrors the snippet tab.
+    _all_notes = core.search(_con())["notes"]
+    with st.container(border=True):
+        st.subheader("📂 Resume / edit a note")
+        if not _all_notes:
+            st.caption("No notes saved yet — save one above first.")
+        else:
+            rnsel = st.selectbox(
+                "Pick a note to resume editing",
+                [_n["id"] for _n in _all_notes],
+                format_func=lambda _i: next(
+                    _n["title"] for _n in _all_notes if _n["id"] == _i),
+                key=P + "resume_note")
+            rn = next(_n for _n in _all_notes if _n["id"] == rnsel)
+            rnt = st.text_input("Title", value=rn["title"],
+                                key=P + f"rnt_{rn['id']}")
+            rnb = st.text_area("Body", value=rn["body_md"], height=200,
+                               key=P + f"rnb_{rn['id']}")
+            rng = st.text_input("Tags", value=rn["tags"] or "",
+                                key=P + f"rng_{rn['id']}")
+            if st.button("💾 Save changes", type="primary",
+                         key=P + f"rnsv_{rn['id']}"):
+                core.update_note(_con(), rn["id"],
+                                 {"title": rnt, "body_md": rnb,
+                                  "tags": rng})
+                st.success("Note updated.")
+                st.rerun()
 
     res = core.search(_con())
     st.caption(f"{len(res['notes'])} note(s).")

@@ -1,14 +1,18 @@
 """Core logic for the AI Prompt & Privacy Hub. Pure — no ``st.*`` calls.
 
 Covers: framework-based prompt assembly (RTC / CoT / Few-Shot / Repo
-Upgrade), custom template storage, reversible PII/schema masking, and the
-local repo context packer.
+Upgrade), custom template storage (central workspace DB), reversible
+PII/schema masking (mask dictionary in the central workspace DB), and
+the local repo context packer.
 """
 
 import html
-import json
 import re
+import sqlite3
+from datetime import datetime
 from pathlib import Path
+
+import workspace_db as wdb
 
 EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 
@@ -97,45 +101,111 @@ def detect_vars(body: str) -> list[str]:
 
 
 # ------------------------------------------------------------ templates
-def _tpl_path() -> Path:
-    p = Path(__file__).resolve().parent / "storage"
-    p.mkdir(exist_ok=True)
-    return p / "prompt_templates.json"
+# Templates live in the central workspace DB (workspace_db.prompt_templates).
+# The `path` parameter is kept for signature compatibility: when given it
+# is treated as a SQLite database *file* (used by tests for isolation).
+# Legacy JSON storage (storage/prompt_templates.json) is imported once by
+# workspace_db.import_legacy — never read here.
+
+_ws_con: sqlite3.Connection | None = None
 
 
-def load_custom_templates(path: Path | None = None) -> dict:
-    path = Path(path) if path else _tpl_path()
-    if path.exists():
-        try:
-            return json.loads(path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            return {}
-    return {}
+def _workspace_con() -> sqlite3.Connection:
+    """Lazily opened central-DB connection (init + one-time legacy import)."""
+    global _ws_con
+    if _ws_con is None:
+        _ws_con = wdb.open_workspace(Path(__file__).parent)
+    return _ws_con
 
 
-def save_custom_template(name: str, body: str, path: Path | None = None) -> None:
+def _now() -> str:
+    return datetime.now().isoformat(timespec="seconds")
+
+
+def _resolve(path: Path | str | None = None,
+             con: sqlite3.Connection | None = None
+             ) -> tuple[sqlite3.Connection, bool]:
+    """Return ``(connection, owns)`` — ``owns`` means the caller closes it."""
+    if con is not None:
+        return con, False
+    if path is not None:
+        c = sqlite3.connect(str(path), check_same_thread=False)
+        c.row_factory = sqlite3.Row
+        wdb.init_db(c)
+        return c, True
+    return _workspace_con(), False
+
+
+def load_custom_templates(path: Path | str | None = None,
+                          con: sqlite3.Connection | None = None) -> dict:
+    c, owns = _resolve(path, con)
+    try:
+        rows = c.execute(
+            "SELECT name, body FROM prompt_templates ORDER BY name").fetchall()
+        return {r["name"]: r["body"] for r in rows}
+    finally:
+        if owns:
+            c.close()
+
+
+def save_custom_template(name: str, body: str,
+                         path: Path | str | None = None,
+                         con: sqlite3.Connection | None = None) -> None:
+    """Insert or replace a custom template (upsert)."""
     if not name.strip() or not body.strip():
         raise ValueError("Template name and body are required.")
-    path = Path(path) if path else _tpl_path()
-    tpl = load_custom_templates(path)
-    tpl[name.strip()] = body
-    path.write_text(json.dumps(tpl, indent=2, ensure_ascii=False),
-                    encoding="utf-8")
+    c, owns = _resolve(path, con)
+    try:
+        c.execute(
+            "INSERT INTO prompt_templates (name, body, updated_at) "
+            "VALUES (?, ?, ?) "
+            "ON CONFLICT(name) DO UPDATE SET body=excluded.body, "
+            "updated_at=excluded.updated_at",
+            (name.strip(), body, _now()))
+        c.commit()
+    finally:
+        if owns:
+            c.close()
 
 
-def delete_custom_template(name: str, path: Path | None = None) -> None:
-    path = Path(path) if path else _tpl_path()
-    tpl = load_custom_templates(path)
-    tpl.pop(name, None)
-    path.write_text(json.dumps(tpl, indent=2, ensure_ascii=False),
-                    encoding="utf-8")
+def update_custom_template(name: str, body: str,
+                           path: Path | str | None = None,
+                           con: sqlite3.Connection | None = None) -> None:
+    """Update the body of an existing template. Raises KeyError when the
+    name does not exist (unlike save, this never creates)."""
+    if not body.strip():
+        raise ValueError("Template body is required.")
+    c, owns = _resolve(path, con)
+    try:
+        cur = c.execute(
+            "UPDATE prompt_templates SET body = ?, updated_at = ? "
+            "WHERE name = ?", (body, _now(), name.strip()))
+        if cur.rowcount == 0:
+            raise KeyError(f"No such template: {name!r}")
+        c.commit()
+    finally:
+        if owns:
+            c.close()
+
+
+def delete_custom_template(name: str,
+                           path: Path | str | None = None,
+                           con: sqlite3.Connection | None = None) -> None:
+    c, owns = _resolve(path, con)
+    try:
+        c.execute("DELETE FROM prompt_templates WHERE name = ?",
+                  (name.strip(),))
+        c.commit()
+    finally:
+        if owns:
+            c.close()
 
 
 # ------------------------------------------------------------ masker
-def _map_path() -> Path:
-    p = Path(__file__).resolve().parent / "storage"
-    p.mkdir(exist_ok=True)
-    return p / "mask_map.json"
+# The mask dictionary lives in the central workspace DB
+# (workspace_db.mask_map) as plaintext rows on this machine only.
+# Legacy JSON storage (storage/mask_map.json) is imported once by
+# workspace_db.import_legacy — never read here.
 
 
 def mask_text(text: str, staff: list[str], stores: list[str],
@@ -176,34 +246,46 @@ def mask_text(text: str, staff: list[str], stores: list[str],
     return out, mapping
 
 
-def save_mapping(mapping: dict, path: Path | None = None) -> Path:
-    path = Path(path) if path else _map_path()
-    path.write_text(json.dumps(mapping, indent=2, ensure_ascii=False),
-                    encoding="utf-8")
-    return path
-
-
-def load_mapping(path: Path | None = None) -> dict:
-    path = Path(path) if path else _map_path()
-    if path.exists():
-        try:
-            return json.loads(path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            return {}
-    return {}
-
-
-def clear_mapping(path: Path | None = None) -> bool:
-    """Permanently delete the local mask dictionary (the plaintext
-    {token: original PII} mapping). Returns True if a file was removed."""
-    path = Path(path) if path else _map_path()
+def save_mapping(mapping: dict,
+                 path: Path | str | None = None,
+                 con: sqlite3.Connection | None = None) -> None:
+    """Replace the whole mask dictionary (whole-replace, same as the old
+    JSON-file semantics: the UI always saves the complete current mapping)."""
+    c, owns = _resolve(path, con)
     try:
-        path.unlink()
-        return True
-    except FileNotFoundError:
-        return False
-    except OSError:
-        return False
+        c.execute("DELETE FROM mask_map")
+        c.executemany("INSERT INTO mask_map (token, original) VALUES (?, ?)",
+                      list(mapping.items()))
+        c.commit()
+    finally:
+        if owns:
+            c.close()
+
+
+def load_mapping(path: Path | str | None = None,
+                 con: sqlite3.Connection | None = None) -> dict:
+    c, owns = _resolve(path, con)
+    try:
+        rows = c.execute(
+            "SELECT token, original FROM mask_map").fetchall()
+        return {r["token"]: r["original"] for r in rows}
+    finally:
+        if owns:
+            c.close()
+
+
+def clear_mapping(path: Path | str | None = None,
+                  con: sqlite3.Connection | None = None) -> bool:
+    """Permanently delete the local mask dictionary (the plaintext
+    {token: original PII} rows). Returns True if any rows were removed."""
+    c, owns = _resolve(path, con)
+    try:
+        cur = c.execute("DELETE FROM mask_map")
+        c.commit()
+        return cur.rowcount > 0
+    finally:
+        if owns:
+            c.close()
 
 
 def unmask_text(text: str, mapping: dict) -> str:

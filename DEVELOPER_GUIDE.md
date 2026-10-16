@@ -180,6 +180,23 @@ cases, and every warning branch. Then `python3 -m py_compile app.py`.
   must neutralize `</script` (e.g. `<\/script`) and JSON-encode dynamic
   values (`json.dumps`), never f-string them raw.
 
+## Central workspace database (shared convention)
+
+- `workspace_db.py` is copied identically into every storage-backed app dir
+  (`unified-data-studio/`, `knowledge-snippet-vault/` [canonical — edit here
+  first], `bi-requirement-meeting-hub/`, `ai-prompt-privacy-hub/`).
+  **Keep the copies identical** — any schema/behavior change must be synced
+  to all of them.
+- One `workspace_master.db` holds every module's records. Resolution order:
+  `link.json` override → `<repo>/workspace/` → `./workspace_master.db`
+  fallback. `link.json` lives next to the default location; never commit
+  user folder paths.
+- `workspace/` is gitignored (`*.db` covers the database file itself).
+- The Workspace Data Manager page (`unified-data-studio/pages/
+  workspace_manager.py`, `wsm_` session-state prefix) is the control plane:
+  live record counts, linked-folder set/clear, timestamped backup download,
+  validated restore (auto-backs-up the current DB first).
+
 ## What goes where
 
 | This file (shared) | Per-app `DEVELOPER_GUIDELINES.md` |

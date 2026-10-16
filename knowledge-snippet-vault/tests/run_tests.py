@@ -10,6 +10,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import vault_core as core  # noqa: E402
+import workspace_db as wsdb  # noqa: E402
 
 passed = 0
 
@@ -86,5 +87,63 @@ check("cheatsheet sections",
       and "## Study Notes" in md)
 check("cheatsheet code fence", "```dax" in md and "YoY" in md)
 check("cheatsheet note body", "Churn = leavers / base." in md)
+
+# --- central workspace DB -------------------------------------------------------
+# Isolated central-style DB on a tmp path: never touches the real
+# <repo>/workspace/workspace_master.db.
+wdb_path = Path(tempfile.mkdtemp()) / "workspace_master.db"
+wcon = wsdb.connect(wdb_path)
+wsdb.init_db(wcon)
+check("central tables exist",
+      {r[0] for r in wcon.execute(
+          "SELECT name FROM sqlite_master WHERE type='table'")}
+      >= {"snippets", "notes", "requirements", "prompt_templates",
+          "mask_map", "app_meta"})
+check("record counts start at zero",
+      wsdb.record_counts(wcon)["snippets"] == 0
+      and wsdb.record_counts(wcon)["notes"] == 0)
+
+# Core functions work unchanged against a central-DB connection
+# (same columns as the old vault.db).
+cs = core.add_snippet(wcon, "Central test", "Python", "x = 1", "", "t")
+core.update_snippet(wcon, cs, {"title": "Central test v2"})
+check("resume-update round-trip on central con",
+      core.search(wcon, query="v2")["snippets"][0]["title"]
+      == "Central test v2")
+
+# One-time legacy import: fixture app dir named knowledge-snippet-vault
+# with a legacy storage/vault.db holding rows. Uses a FRESH central DB —
+# import_legacy only fills empty tables (by design).
+wcon2 = wsdb.connect(Path(tempfile.mkdtemp()) / "ws2.db")
+wsdb.init_db(wcon2)
+fix_app = Path(tempfile.mkdtemp()) / "knowledge-snippet-vault"
+(fix_app / "storage").mkdir(parents=True)
+legacy_path = fix_app / "storage" / "vault.db"
+lcon = core.connect(legacy_path)  # explicit path = old-style isolated DB
+core.add_snippet(lcon, "Legacy snippet", "SQL", "SELECT 1", "ctx", "old")
+core.add_note(lcon, "Legacy note", "body here", "oldtag")
+lcon.close()
+check("legacy fixture built", legacy_path.exists())
+
+done = wsdb.import_legacy(wcon2, fix_app)
+check("legacy import row counts",
+      done.get("snippets") == 1 and done.get("notes") == 1)
+check("legacy snippet visible in central DB",
+      core.search(wcon2, query="Legacy snippet")["snippets"][0]["code"]
+      == "SELECT 1")
+check("legacy note visible in central DB",
+      core.search(wcon2, query="Legacy note")["notes"][0]["body_md"]
+      == "body here")
+check("legacy import idempotent", wsdb.import_legacy(wcon2, fix_app) == {})
+check("legacy file untouched (still on disk)",
+      legacy_path.exists()
+      and legacy_path.stat().st_size > 0)
+
+# No-path connect() delegates to the central workspace DB (creates the
+# gitignored <repo>/workspace/workspace_master.db on first use).
+c0 = core.connect()
+check("no-path connect hits central DB",
+      c0.execute("SELECT COUNT(*) FROM snippets").fetchone()[0] >= 0)
+c0.close()
 
 print(f"\nAll {passed} checks passed.")

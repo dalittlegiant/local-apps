@@ -109,6 +109,9 @@ pg = st.navigation(
             st.Page("../data-quality-watchdog/app.py",
                     title="Data Quality Watchdog",
                     url_path="data-quality-watchdog"),
+            st.Page("pages/workspace_manager.py",
+                    title="Workspace Data Manager",
+                    url_path="workspace-data-manager"),
         ],
         "🛡️ Governance & Security": [
             st.Page("pages/security_command_center.py",

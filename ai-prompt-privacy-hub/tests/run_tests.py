@@ -3,6 +3,7 @@
 Run:  python3 tests/run_tests.py   (from the app directory)
 """
 
+import json
 import sys
 import tempfile
 from pathlib import Path
@@ -10,6 +11,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import prompt_core as core  # noqa: E402
+import workspace_db as wdb  # noqa: E402
 
 passed = 0
 
@@ -21,6 +23,14 @@ def check(name, cond, detail=""):
         sys.exit(1)
     passed += 1
     print(f"ok: {name}")
+
+
+def _test_con():
+    """Isolated central-DB connection for storage tests."""
+    db = Path(tempfile.mkdtemp()) / "ws.db"
+    con = wdb.connect(db)
+    wdb.init_db(con)
+    return con
 
 
 # --- prompt builder ---------------------------------------------------------
@@ -37,17 +47,40 @@ check("repo guardrails present",
 
 check("detect vars", core.detect_vars("Hi {name}, see {topic}!") == ["name", "topic"])
 
-# --- custom templates ----------------------------------------------------------
-tmp = Path(tempfile.mkdtemp()) / "t.json"
-core.save_custom_template("t1", "Hello {who}", tmp)
-check("template saved", core.load_custom_templates(tmp) == {"t1": "Hello {who}"})
-core.delete_custom_template("t1", tmp)
-check("template deleted", core.load_custom_templates(tmp) == {})
+# --- custom templates (central workspace DB) ---------------------------------------
+con = _test_con()
+core.save_custom_template("t1", "Hello {who}", con=con)
+check("template saved",
+      core.load_custom_templates(con=con) == {"t1": "Hello {who}"})
+core.save_custom_template("t1", "Hi {who}", con=con)
+check("template upsert overwrites",
+      core.load_custom_templates(con=con) == {"t1": "Hi {who}"})
+core.update_custom_template("t1", "Hey {who}", con=con)
+check("template updated",
+      core.load_custom_templates(con=con) == {"t1": "Hey {who}"})
 try:
-    core.save_custom_template(" ", " ", tmp)
+    core.update_custom_template("nope", "x", con=con)
+    check("update missing rejected", False)
+except KeyError:
+    check("update missing rejected", True)
+try:
+    core.update_custom_template("t1", " ", con=con)
+    check("update empty body rejected", False)
+except ValueError:
+    check("update empty body rejected", True)
+core.delete_custom_template("t1", con=con)
+check("template deleted", core.load_custom_templates(con=con) == {})
+try:
+    core.save_custom_template(" ", " ", con=con)
     check("empty template rejected", False)
 except ValueError:
     check("empty template rejected", True)
+# legacy `path` param still accepted: treated as an isolated SQLite file
+tmp_db = Path(tempfile.mkdtemp()) / "legacy.db"
+core.save_custom_template("p1", "Yo {who}", path=tmp_db)
+check("path fallback works",
+      core.load_custom_templates(path=tmp_db) == {"p1": "Yo {who}"})
+con.close()
 
 # --- masker -----------------------------------------------------------------------
 raw = ("Contact Amy Chan (amy.chan@company.com) about Store TST-01. "
@@ -119,10 +152,39 @@ check("highlight adjacent originals",
                               {"User_01": "Amy Chan", "User_02": "Bob Lee"})
       == "<mark>Amy Chan</mark><mark>Bob Lee</mark>")
 
-# mapping persistence
-mp = Path(tempfile.mkdtemp()) / "m.json"
-core.save_mapping(mapping, mp)
-check("mapping persisted", core.load_mapping(mp) == mapping)
+# mapping persistence (central workspace DB)
+mcon = _test_con()
+core.save_mapping({"User_01": "Amy Chan", "Store_01": "Store TST-01"}, con=mcon)
+check("mapping persisted",
+      core.load_mapping(con=mcon)
+      == {"User_01": "Amy Chan", "Store_01": "Store TST-01"})
+core.save_mapping({"User_01": "Amy Chan"}, con=mcon)
+check("mapping whole-replaced",
+      core.load_mapping(con=mcon) == {"User_01": "Amy Chan"})
+check("clear mapping removes rows", core.clear_mapping(con=mcon) is True)
+check("mapping empty after clear", core.load_mapping(con=mcon) == {})
+check("clear empty mapping returns False",
+      core.clear_mapping(con=mcon) is False)
+mcon.close()
+
+# --- legacy JSON import (one-time, via workspace_db) ------------------------------
+legacy_app = Path(tempfile.mkdtemp()) / "ai-prompt-privacy-hub"
+(legacy_app / "storage").mkdir(parents=True)
+(legacy_app / "storage" / "prompt_templates.json").write_text(
+    json.dumps({"old_tpl": "Hi {who}"}), encoding="utf-8")
+(legacy_app / "storage" / "mask_map.json").write_text(
+    json.dumps({"User_01": "Amy Chan"}), encoding="utf-8")
+icon = wdb.connect(Path(tempfile.mkdtemp()) / "ws.db")
+wdb.init_db(icon)
+done = wdb.import_legacy(icon, legacy_app)
+check("legacy templates imported", done.get("prompt_templates") == 1)
+check("legacy mask map imported", done.get("mask_map") == 1)
+check("legacy template readable via core",
+      core.load_custom_templates(con=icon) == {"old_tpl": "Hi {who}"})
+check("legacy mapping readable via core",
+      core.load_mapping(con=icon) == {"User_01": "Amy Chan"})
+check("legacy import idempotent", wdb.import_legacy(icon, legacy_app) == {})
+icon.close()
 
 # --- repo packer --------------------------------------------------------------------
 d = Path(tempfile.mkdtemp())

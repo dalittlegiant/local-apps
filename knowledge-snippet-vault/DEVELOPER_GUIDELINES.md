@@ -32,8 +32,18 @@ knowledge-snippet-vault/
 
 ## Functions & methodology (`vault_core.py`, all pure)
 
-- `db_path()` — `<app>/storage/vault.db`, auto-created; `connect()` with
-  dict row-factory and idempotent schema.
+- **Central workspace DB (2026-10-16):** `connect()` with no path now
+  delegates to `workspace_db.open_workspace()` — records live in the
+  single `<repo>/workspace/workspace_master.db` (`snippets`/`notes`
+  tables, same columns as the old `storage/vault.db`). The one-time
+  legacy import from `storage/vault.db` runs automatically and is
+  idempotent (`migrated_knowledge-snippet-vault` flag); the old file
+  stays on disk untouched (gitignored). Explicit `connect(path)` still
+  opens an isolated DB (used by tests). `db_path()` returns the effective
+  central path via `workspace_db.resolve_db_path()`. `workspace_db.py`
+  is the canonical copy — identical copies live in
+  `bi-requirement-meeting-hub/`, `ai-prompt-privacy-hub/`,
+  `unified-data-studio/`; edit here first.
 - CRUD for both tables with required-field and language validation.
 - `search(query, language, tags)` — LIKE full-text over title/code/notes
   (or title/body for notes), optional language + multi-tag post-filter.
@@ -47,6 +57,12 @@ knowledge-snippet-vault/
 - LaTeX renders via Streamlit's built-in KaTeX (`$…$` / `$$…$$`).
 - Code display uses `st.code` with a per-language fence map; copy from the
   block.
+- **Resume panel (2026-10-16):** each tab opens with a prominent
+  "📂 Resume / edit" panel — a selectbox listing existing records by
+  title loads the record into an edit form (widget keys suffixed with
+  the record id so switching records resets state); 💾 Save calls the
+  existing `update_snippet`/`update_note`. The per-expander ✏️ Edit
+  buttons remain as a secondary path.
 
 ## Testing
 
