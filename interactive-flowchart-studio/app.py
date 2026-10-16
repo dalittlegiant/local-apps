@@ -232,7 +232,13 @@ with tab_edit:
                 "desc": st.column_config.TextColumn("Detailed_Description",
                                                     width="large"),
             })
-        st.session_state[P + "nodes"] = nodes_df
+        # Commit the editor output to the source ONLY when it changed.
+        # Writing it back unconditionally every run feeds the widget its
+        # own output and causes the Enter-reverts-once (off-by-one)
+        # render loop.
+        if not nodes_df.equals(st.session_state[P + "nodes"]):
+            st.session_state[P + "nodes"] = nodes_df
+        nodes_df = st.session_state[P + "nodes"]
 
     st.subheader("Edges")
     with st.container(border=True):
@@ -245,7 +251,11 @@ with tab_edit:
                 "label": st.column_config.TextColumn("Condition_Label",
                                                      help="e.g. Yes / No / Case A"),
             })
-        st.session_state[P + "edges"] = edges_df
+        # Same commit-only-on-change guard as the nodes editor above —
+        # unconditional write-back causes the off-by-one revert loop.
+        if not edges_df.equals(st.session_state[P + "edges"]):
+            st.session_state[P + "edges"] = edges_df
+        edges_df = st.session_state[P + "edges"]
 
     st.subheader("Quick-add edge")
     with st.container(border=True):

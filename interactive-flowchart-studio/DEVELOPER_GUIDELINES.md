@@ -223,3 +223,14 @@ the sync code).
 `data:` media pass. The injected `DEFAULT_CSP` was tightened to
 `img-src 'self' data: blob:` (no `https:`) so tracking pixels are blocked at runtime
 while local/same-origin SharePoint images keep working.
+
+### data_editor state rule (2026-10-16)
+
+Never write a `st.data_editor` return value back into its feeding
+`st.session_state` variable unconditionally — that feedback loop causes the
+Enter-reverts-once (off-by-one) render bug. Pattern: capture locally, commit
+only on change —
+`if not edited.equals(st.session_state[P+"nodes"]): st.session_state[P+"nodes"] = edited`.
+Both editors use stable keys (`fc8_nodes_ed`, `fc8_edges_ed`). The DAX editor
+and meeting-hub triage board already follow the decoupled pattern (fresh
+input rebuilt each run, local `edited`, explicit apply/save).
