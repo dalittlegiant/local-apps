@@ -5,6 +5,7 @@ Upgrade), custom template storage, reversible PII/schema masking, and the
 local repo context packer.
 """
 
+import html
 import json
 import re
 from pathlib import Path
@@ -206,11 +207,40 @@ def clear_mapping(path: Path | None = None) -> bool:
 
 
 def unmask_text(text: str, mapping: dict) -> str:
-    """Swap tokens back to originals (longest token first)."""
+    """Swap tokens back to originals (longest token first).
+
+    Also strips a square-bracket wrapper around tokens: LLMs frequently
+    echo placeholders as ``[User_01]``, and a naive token swap would leave
+    ``[Amy Chan]`` behind. Both passes are longest-token-first so a short
+    token can never corrupt a longer one (``User_1`` inside ``User_10``).
+    Brackets that do NOT wrap a known token (e.g. ``[note]``) are left
+    untouched. The result is clean, copy-pasteable plain text.
+    """
     out = text
+    for tok in sorted(mapping, key=len, reverse=True):
+        out = out.replace(f"[{tok}]", mapping[tok])
     for tok in sorted(mapping, key=len, reverse=True):
         out = out.replace(tok, mapping[tok])
     return out
+
+
+def highlight_unmasked(restored: str, mapping: dict) -> str:
+    """Render restored text as HTML with unmasked keywords highlighted.
+
+    The plain text is ``html.escape``d FIRST; then every restored original
+    is wrapped in ``<mark>`` via a single regex pass (longest originals
+    first, so overlapping names can't nest). ``<mark>`` tags are the only
+    raw HTML emitted — an original containing ``<script>`` is rendered as
+    inert text and can never break the preview. Safe to render with
+    ``st.markdown(..., unsafe_allow_html=True)``.
+    """
+    escaped = html.escape(restored)
+    originals = sorted({o for o in mapping.values() if o},
+                       key=len, reverse=True)
+    if not originals:
+        return escaped
+    pat = re.compile("|".join(re.escape(html.escape(o)) for o in originals))
+    return pat.sub(lambda m: f"<mark>{m.group(0)}</mark>", escaped)
 
 
 # ------------------------------------------------------------ repo packer

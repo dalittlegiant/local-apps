@@ -37,8 +37,8 @@ the suite launcher).
   `streamlit` dropped (stlite ships its own).
 - `WASM_REQ_SUBSTITUTIONS` / `apply_wasm_substitutions(names)` — packages
   with no WASM wheel are swapped for pure-Python equivalents at build
-  time (`pypdfium2` → `pypdf`) or dropped (`pdfplumber`), so an export
-  survives even if a desktop requirements.txt lists them.
+  time (`pypdfium2` → `pypdf`) or dropped (`pdfplumber`, `pymupdf`), so an
+  export survives even if a desktop requirements.txt lists them.
 - `bundle_files(app)` — `{virtual_name: source}` for the stlite `files`
   dict; the entry `app.py` becomes `streamlit_app.py`, sibling `*_core`
   modules keep their names so plain `import diff_core` works.

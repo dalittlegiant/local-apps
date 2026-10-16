@@ -360,4 +360,44 @@ safe_nc = core.sanitize_export(evil, use_csp=False)
 check("sanitize_export no csp", "Content-Security-Policy" not in safe_nc
       and 'rel="noopener noreferrer"' in safe_nc)
 
+# --- custom positions (drag persistence) ------------------------------------------
+pos_c = {"a": (500, 600), "c": (10, 20)}
+pos2, sw2, sh2 = core.layout(nodes, edges, positions=pos_c)
+check("positions override layout",
+      pos2["a"] == (500, 600) and pos2["c"] == (10, 20))
+check("positions others auto-laid-out",
+      pos2["b"] == core.layout(nodes, edges)[0]["b"])
+check("positions unknown ids ignored",
+      "zz" not in core.layout(nodes, edges, positions={"zz": (1, 2)})[0])
+check("positions bad values ignored",
+      core.layout(nodes, edges, positions={"a": "nope"})[0]["a"]
+      == core.layout(nodes, edges)[0]["a"])
+doc_p = core.render_viewer_html("T", nodes, edges, positions=pos_c)
+check("export embeds custom coords",
+      'data-x="500" data-y="600"' in doc_p
+      and 'data-x="10" data-y="20"' in doc_p)
+pos_auto = core.layout(nodes, edges)[0]
+check("custom differs from auto",
+      f'data-x="{pos_auto["a"][0]}"' not in doc_p
+      or pos_auto["a"] == (500, 600))
+check("pos sync js present",
+      "syncPosToParent" in doc_p and "history.replaceState" in doc_p)
+check("poskey embedded", f'"{core.POS_PARAM}"' in doc_p)
+check("audit clean with sync js",
+      core.audit_html_security(doc_p)["passed"])
+check("parse valid",
+      core.parse_positions_param('{"a": [10, 20], "b": [1.6, 2.4]}')
+      == {"a": (10, 20), "b": (2, 2)})
+check("parse invalid", core.parse_positions_param("nope") == {})
+check("parse none", core.parse_positions_param(None) == {})
+check("parse non-dict", core.parse_positions_param("[1,2]") == {})
+check("parse drops bad entries",
+      core.parse_positions_param(
+          '{"a": [1, 2], "b": "x", "": [1, 2], "c": [1e20, 0], '
+          '"d": [1, null]}') == {"a": (1, 2)})
+check("parse clamps range",
+      core.parse_positions_param('{"a": [99999, 0]}') == {})
+svg_p = core.to_svg(nodes, edges, "T", positions=pos_c)
+check("svg uses custom positions", 'data-x="500" data-y="600"' in svg_p)
+
 print(f"\nAll {passed} checks passed.")

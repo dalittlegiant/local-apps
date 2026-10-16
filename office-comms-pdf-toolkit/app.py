@@ -3,7 +3,8 @@
 1. Corporate Comms Studio — templates (launch, training, schedule change,
    delay notice, audit reminder) -> email + Teams drafts + checklist.
 2. Offline PDF Toolkit — merge, split/extract pages, text watermark, table
-   extraction to Excel (pypdf + reportlab).
+   extraction to Excel (multi-strategy: pdfplumber grid/text → PyMuPDF →
+   pypdf layout fallback, with a mode toggle).
 3. Screenshot Beautifier — trim, padding, rounded corners, drop shadow
    (Pillow), batch + zip download.
 
@@ -173,21 +174,32 @@ with tab_pdf:
 
         st.divider()
         st.subheader("📊 Extract tables to Excel")
+        mode_label = st.radio(
+            "Extraction mode",
+            ["Auto", "Grid/Bordered", "Borderless/Text-Aligned"],
+            horizontal=True, key=P + "tab_mode",
+            help="Auto tries bordered-grid detection first, then text-aligned, "
+                 "then PyMuPDF, then a text-layout fallback — per page.")
+        mode = {"Auto": "auto", "Grid/Bordered": "grid",
+                "Borderless/Text-Aligned": "borderless"}[mode_label]
         t_up = st.file_uploader("PDF", type=["pdf"], key=P + "tables")
         if t_up:
             if st.button("Extract tables", type="primary", key=P + "tab_go"):
                 try:
-                    tables = core.extract_tables(t_up.getvalue())
+                    tables = core.extract_tables(t_up.getvalue(), mode=mode)
                 except Exception as e:
                     st.error(f"⚠️ Could not read that PDF: {e}")
                 else:
                     if not tables:
-                        st.warning("No tables detected on any page.")
+                        st.warning("No tables detected on any page "
+                                   f"(mode: {mode_label}).")
                     else:
                         st.success(f"Found {len(tables)} table(s).")
-                        for pi, ti, df in tables[:6]:
-                            st.markdown(f"**Page {pi}, table {ti}** "
-                                        f"({len(df)} rows × {len(df.columns)} cols)")
+                        for pi, ti, df, strat in tables[:6]:
+                            st.markdown(
+                                f"**Page {pi}, table {ti}** "
+                                f"({len(df)} rows × {len(df.columns)} cols) — "
+                                f"`{core.STRATEGY_LABELS[strat]}`")
                             st.dataframe(df.head(10), use_container_width=True)
                         if len(tables) > 6:
                             st.caption(f"…and {len(tables) - 6} more in the download.")

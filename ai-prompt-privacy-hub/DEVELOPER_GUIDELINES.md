@@ -16,7 +16,7 @@ ai-prompt-privacy-hub/
 ├── app.py                  # Streamlit UI only
 ├── prompt_core.py          # pure logic — no st.*
 ├── storage/                # prompt_templates.json, mask_map.json (gitignored)
-├── tests/run_tests.py      # 29 checks, no Streamlit needed
+├── tests/run_tests.py      # 40 checks, no Streamlit needed
 └── requirements.txt
 ```
 
@@ -37,7 +37,16 @@ ai-prompt-privacy-hub/
   metrics `Metric_A…`. Same original always reuses its token. Returns
   `(masked, {token: original})`.
 - `save/load_mapping` — `storage/mask_map.json`; `unmask_text` swaps tokens
-  back longest-first (exact round-trip).
+  back longest-first (exact round-trip) and strips a square-bracket wrapper
+  around tokens (`[User_01]` → `Amy Chan`, brackets gone — LLMs echo
+  placeholders bracketed). Brackets not wrapping a known token are left
+  alone. Output is clean copy-pasteable plain text.
+- `highlight_unmasked(restored, mapping)` — HTML preview of restored text:
+  `html.escape` FIRST, then a single longest-first regex pass wraps each
+  restored original in `<mark>` (the only raw HTML emitted, so an original
+  containing `<script>` renders as inert text). Rendered via
+  `st.markdown(..., unsafe_allow_html=True)` in the Unmask tab preview only;
+  `st.code` beside it holds the clean text with a copy button.
 - `pack_repo(root, …)` — walks a folder, packs `.py/.tmdl/.sql/.m/.md`
   into one Markdown block; **strictly excludes** `.csv/.xlsx/.db/.parquet`
   and skips `.git/__pycache__/storage/data` etc.; per-file and total char
@@ -54,7 +63,10 @@ ai-prompt-privacy-hub/
 `python3 tests/run_tests.py` (temp paths only) covers: all 4 frameworks +
 category hints, guardrail text, var detection, template save/load/delete +
 validation, email/name/store/metric masking, token formats, token reuse,
-longest-term-first, exact mask→unmask round-trip, mapping persistence,
+longest-term-first, exact mask→unmask round-trip, bracket-wrapped token
+stripping (mixed/bare/adjacent/boundary/non-token-bracket/longest-token-first),
+highlight preview (mark wrapping, HTML escaping, evil-original safety,
+longest-original-wins, adjacent originals), mapping persistence,
 packer inclusion/exclusion/stats, bad-folder rejection. `AppTest` boot
 verified for `app.py`.
 

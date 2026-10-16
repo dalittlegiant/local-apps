@@ -1,9 +1,19 @@
 """Core logic for the Office Comms & PDF Toolkit. Pure — no ``st.*`` calls.
 
 Covers: corporate comms templates, PDF merge/split/watermark/table
-extraction (pypdf + reportlab — pure Python, Stlite/Pyodide-safe), and
-the screenshot beautifier
-(Pillow: trim, padding, rounded corners, drop shadow).
+extraction, and the screenshot beautifier (Pillow: trim, padding, rounded
+corners, drop shadow).
+
+Table extraction is a multi-strategy pipeline (per page):
+  1. pdfplumber ``lines``/``lines`` — bordered/grid tables (vector rules).
+  2. pdfplumber ``text``/``text`` — borderless, text-aligned tables.
+  3. PyMuPDF ``page.find_tables()`` — grid detection.
+  4. PyMuPDF ``find_tables(text, text)`` — text-aligned detection.
+  5. Legacy pypdf ``layout``-mode heuristic (2+ spaces delimit columns).
+pdfplumber / PyMuPDF are optional at runtime: if either is not installed
+(e.g. the Stlite/WASM export, where both are dropped — PyMuPDF has no
+Pyodide wheel and pdfplumber needs pypdfium2), its strategies are skipped
+and the pipeline degrades gracefully to the pure-Python heuristic.
 """
 
 import io
@@ -323,20 +333,170 @@ def _dedupe_cols(cols: list[str]) -> list[str]:
     return out
 
 
-def extract_tables(data: bytes) -> list[tuple[int, int, "pd.DataFrame"]]:
-    """[(page_1based, table_idx, df)] — first row becomes the header.
+# Per-mode cascade: (backend, vertical_strategy, horizontal_strategy, label).
+# Strategies stop at the first one yielding a valid table on each page.
+_STRATEGY_ORDER: dict[str, list[tuple[str, str, str, str]]] = {
+    "auto": [
+        ("pdfplumber", "lines", "lines", "grid"),
+        ("pdfplumber", "text", "text", "text"),
+        ("pymupdf", "lines", "lines", "pymupdf"),
+        ("pymupdf", "text", "text", "pymupdf-text"),
+        ("legacy", "", "", "legacy"),
+    ],
+    "grid": [
+        ("pdfplumber", "lines", "lines", "grid"),
+        ("pymupdf", "lines", "lines", "pymupdf"),
+    ],
+    "borderless": [
+        ("pdfplumber", "text", "text", "text"),
+        ("pymupdf", "text", "text", "pymupdf-text"),
+    ],
+}
 
-    Pure-Python implementation on top of pypdf's ``layout`` text
-    extraction: each run of 2+ spaces starts a new column, and blank
-    lines separate tables. Single-column blocks are treated as prose
-    and skipped. Deliberately pdfplumber-free — pdfplumber requires
-    pypdfium2 (a C extension with no Pyodide/WASM wheel), which breaks
-    Stlite HTML exports.
+STRATEGY_LABELS = {
+    "grid": "Grid / bordered (vector lines)",
+    "text": "Borderless / text-aligned",
+    "pymupdf": "PyMuPDF grid detection",
+    "pymupdf-text": "PyMuPDF text-aligned detection",
+    "legacy": "Legacy text-layout heuristic",
+}
+
+
+def extract_tables(data: bytes, mode: str = "auto"
+                   ) -> list[tuple[int, int, "pd.DataFrame", str]]:
+    """Multi-strategy table extraction → [(page_1based, table_idx, df, strategy)].
+
+    ``mode``: ``"auto"`` (default) runs the full cascade per page —
+    pdfplumber ``lines``/``lines`` → pdfplumber ``text``/``text`` →
+    PyMuPDF grid → PyMuPDF text → legacy pypdf layout heuristic — and
+    stops at the first strategy that yields a valid table on that page.
+    ``"grid"`` only tries the bordered strategies (pdfplumber lines,
+    PyMuPDF grid); ``"borderless"`` only tries the text-aligned ones
+    (pdfplumber text, PyMuPDF text). Forced modes do NOT fall back to the
+    legacy heuristic: a page with no matching table simply yields nothing.
+
+    A detected table counts as valid when it has ≥2 non-empty rows and
+    ≥2 columns (all-empty spacer rows are dropped first). The first row
+    becomes the header (deduped). ``strategy`` is one of ``"grid"``,
+    ``"text"``, ``"pymupdf"``, ``"pymupdf-text"``, ``"legacy"`` — see
+    ``STRATEGY_LABELS`` for UI display names. Strategies whose library
+    is not installed are skipped silently.
     """
-    from pypdf import PdfReader
-    out = []
-    reader = PdfReader(io.BytesIO(data))
-    for pi, page in enumerate(reader.pages, start=1):
+    if mode not in _STRATEGY_ORDER:
+        raise ValueError(f"Unknown extraction mode {mode!r}; "
+                         f"expected one of {sorted(_STRATEGY_ORDER)}.")
+    n_pages = len(_reader(data).pages)
+    out: list[tuple[int, int, "pd.DataFrame", str]] = []
+    pending = set(range(n_pages))
+    for backend, v_strat, h_strat, label in _STRATEGY_ORDER[mode]:
+        if not pending:
+            break
+        if backend == "pdfplumber":
+            found = _pdfplumber_pass(data, v_strat, h_strat)
+        elif backend == "pymupdf":
+            found = _pymupdf_pass(data, v_strat)
+        else:
+            found = _legacy_pass(data)
+        for pi in sorted(pending):
+            tables = found.get(pi)
+            if tables:
+                for ti, rows in enumerate(tables, start=1):
+                    out.append((pi + 1, ti, _rows_to_df(rows), label))
+                pending.discard(pi)
+    out.sort(key=lambda t: (t[0], t[1]))
+    return out
+
+
+def _clean_rows(rows: list[list]) -> list[list[str]]:
+    """None → "", strip cells, drop all-empty (spacer) rows."""
+    cleaned = [[(c if c is not None else "").strip() for c in r]
+               for r in rows]
+    return [r for r in cleaned if any(r)]
+
+
+def _valid_table(rows: list[list]) -> bool:
+    """A detection counts when ≥2 non-empty rows and ≥2 columns survive."""
+    rows = _clean_rows(rows)
+    return len(rows) >= 2 and max((len(r) for r in rows), default=0) >= 2
+
+
+def _rows_to_df(rows: list[list]) -> "pd.DataFrame":
+    rows = _clean_rows(rows)
+    width = max(len(r) for r in rows)
+    rows = [r + [""] * (width - len(r)) for r in rows]
+    return pd.DataFrame(rows[1:], columns=_dedupe_cols(rows[0]))
+
+
+def _pdfplumber_pass(data: bytes, v_strategy: str, h_strategy: str
+                     ) -> dict[int, list[list[list[str]]]]:
+    """{page_0based: [cleaned rows]} — {} if pdfplumber is unavailable."""
+    try:
+        import pdfplumber
+    except ImportError:
+        return {}
+    settings = {"vertical_strategy": v_strategy,
+                "horizontal_strategy": h_strategy}
+    if v_strategy == "text":
+        # Tighter tolerances keep aligned columns together on shaded/
+        # banded rows; spacer rows are dropped by _clean_rows.
+        settings.update({"text_x_tolerance": 6, "text_y_tolerance": 6})
+    out: dict[int, list[list[list[str]]]] = {}
+    try:
+        pdf = pdfplumber.open(io.BytesIO(data))
+    except Exception:
+        return {}
+    with pdf:
+        for pi, page in enumerate(pdf.pages):
+            try:
+                raw = page.extract_tables(settings) or []
+            except Exception:
+                continue
+            good = [c for t in raw if _valid_table(t)
+                    for c in [_clean_rows(t)]]
+            if good:
+                out[pi] = good
+    return out
+
+
+def _pymupdf_pass(data: bytes, strategy: str
+                  ) -> dict[int, list[list[list[str]]]]:
+    """{page_0based: [cleaned rows]} — {} if PyMuPDF is unavailable."""
+    try:
+        import pymupdf
+    except ImportError:
+        return {}
+    out: dict[int, list[list[list[str]]]] = {}
+    try:
+        doc = pymupdf.open(stream=data, filetype="pdf")
+    except Exception:
+        return {}
+    with doc:
+        for pi, page in enumerate(doc):
+            try:
+                tabs = list(page.find_tables(horizontal_strategy=strategy,
+                                             vertical_strategy=strategy))
+            except Exception:
+                continue
+            good = []
+            for tab in tabs:
+                try:
+                    rows = tab.extract()
+                except Exception:
+                    continue
+                if _valid_table(rows):
+                    good.append(_clean_rows(rows))
+            if good:
+                out[pi] = good
+    return out
+
+
+def _legacy_pass(data: bytes) -> dict[int, list[list[list[str]]]]:
+    """Original pypdf ``layout``-mode heuristic: runs of 2+ spaces start a
+    new column, blank lines separate tables, single-column blocks are
+    treated as prose and skipped. Always available (pure Python)."""
+    out: dict[int, list[list[list[str]]]] = {}
+    reader = _reader(data)
+    for pi, page in enumerate(reader.pages):
         text = page.extract_text(extraction_mode="layout") or ""
         blocks: list[list[list[str]]] = []
         cur: list[list[str]] = []
@@ -349,23 +509,23 @@ def extract_tables(data: bytes) -> list[tuple[int, int, "pd.DataFrame"]]:
                 cur = []
         if cur:
             blocks.append(cur)
-        for ti, rows in enumerate(blocks, start=1):
+        tables = []
+        for rows in blocks:
             width = max(len(r) for r in rows)
             if width < 2:  # prose, not a table
                 continue
-            rows = [r + [""] * (width - len(r)) for r in rows]
-            header = _dedupe_cols(rows[0])
-            df = pd.DataFrame(rows[1:], columns=header)
-            out.append((pi, ti, df))
+            tables.append(rows)
+        if tables:
+            out[pi] = tables
     return out
 
 
-def tables_to_excel(tables: list[tuple[int, int, "pd.DataFrame"]]) -> bytes:
+def tables_to_excel(tables: list[tuple[int, int, "pd.DataFrame", str]]) -> bytes:
     if not tables:
         raise ValueError("No tables to export.")
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as w:
-        for pi, ti, df in tables:
+        for pi, ti, df, _strat in tables:
             name = re.sub(r"[^\w]+", "_", f"p{pi}_t{ti}")[:31] or "sheet"
             df.to_excel(w, index=False, sheet_name=name)
     return buf.getvalue()

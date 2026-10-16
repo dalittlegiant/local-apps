@@ -75,6 +75,50 @@ check("longest term wins", "Flagship" not in m2 and "Store TST-01" not in m2)
 restored = core.unmask_text(masked, mapping)
 check("round trip", restored == raw, f"\n{restored}\n!=\n{raw}")
 
+# --- clean unmask: bracket stripping ---------------------------------------------
+m_b, map_b = core.mask_text("Amy Chan visited Store TST-01",
+                            ["Amy Chan"], ["Store TST-01"], [])
+tok_a = next(t for t, o in map_b.items() if o == "Amy Chan")
+tok_s = next(t for t, o in map_b.items() if o == "Store TST-01")
+check("unmask strips bracketed tokens",
+      core.unmask_text(f"[{tok_a}] met [{tok_s}].", map_b)
+      == "Amy Chan met Store TST-01.")
+check("unmask mixed bare and bracketed",
+      core.unmask_text(f"{tok_a} and [{tok_s}]", map_b)
+      == "Amy Chan and Store TST-01")
+check("unmask adjacent bracketed tokens",
+      core.unmask_text(f"[{tok_a}][{tok_s}]", map_b)
+      == "Amy ChanStore TST-01")
+check("unmask bracketed token at string boundaries",
+      core.unmask_text(f"[{tok_a}]", map_b) == "Amy Chan")
+check("unmask leaves non-token brackets alone",
+      core.unmask_text(f"see [note] about {tok_a}", map_b)
+      == "see [note] about Amy Chan")
+check("unmask longest token first",
+      core.unmask_text("User_10", {"User_1": "Ann", "User_10": "Annette"})
+      == "Annette")
+
+# --- highlight preview ------------------------------------------------------------
+hl = core.highlight_unmasked("Contact Amy Chan today", {"User_01": "Amy Chan"})
+check("highlight wraps original",
+      hl == "Contact <mark>Amy Chan</mark> today", hl)
+check("highlight escapes plain text",
+      core.highlight_unmasked("a < b", {}) == "a &lt; b")
+hl_evil = core.highlight_unmasked("Hi <script>alert(1)</script>!",
+                                  {"User_01": "<script>alert(1)</script>"})
+check("highlight escapes evil original",
+      "<script>" not in hl_evil
+      and "&lt;script&gt;" in hl_evil
+      and hl_evil.count("<mark>") == 1, hl_evil)
+check("highlight longest original wins",
+      core.highlight_unmasked("Amy Chan",
+                              {"User_01": "Amy", "User_02": "Amy Chan"})
+      == "<mark>Amy Chan</mark>")
+check("highlight adjacent originals",
+      core.highlight_unmasked("Amy ChanBob Lee",
+                              {"User_01": "Amy Chan", "User_02": "Bob Lee"})
+      == "<mark>Amy Chan</mark><mark>Bob Lee</mark>")
+
 # mapping persistence
 mp = Path(tempfile.mkdtemp()) / "m.json"
 core.save_mapping(mapping, mp)

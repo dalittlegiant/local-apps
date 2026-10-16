@@ -79,7 +79,9 @@ def read_requirements(app_path) -> list:
 # an export keeps working even if a desktop requirements.txt lists them.
 WASM_REQ_SUBSTITUTIONS = {
     "pypdfium2": "pypdf",   # pdfplumber's C-extension backend
-    "pdfplumber": None,     # dropped — table extraction uses pypdf now
+    "pdfplumber": None,     # dropped — table extraction falls back to the
+                            # pure-Python pypdf layout heuristic in WASM
+    "pymupdf": None,        # dropped — C extension, no Pyodide/WASM wheel
 }
 
 

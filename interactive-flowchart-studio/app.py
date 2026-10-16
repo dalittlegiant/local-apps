@@ -83,6 +83,8 @@ def _load_template(key: str):
     st.session_state[P + "nodes"] = nodes[NODE_COLS]
     st.session_state[P + "edges"] = edges[EDGE_COLS]
     st.session_state[P + "title"] = tpl["name"]
+    # Captured drag positions belong to the previous flow — drop them.
+    st.session_state.pop(P + "positions", None)
     for k in (P + "nodes_ed", P + "edges_ed"):
         st.session_state.pop(k, None)
 
@@ -142,6 +144,33 @@ def _viewer_opts() -> dict:
 def _node_sizes(nodes: list[dict], opts: dict) -> dict:
     """Auto-fit boxes shared by layout and viewer so both agree."""
     return core.node_boxes(nodes, opts["title_fs"], opts["subtitle_fs"])
+
+
+def _custom_positions(nodes: list[dict]) -> dict:
+    """Captured drag positions (``fc8_positions``), restricted to node ids
+    still present in the flow. Empty dict = pure auto-layout."""
+    ids = {str(n.get("id", "")).strip() for n in nodes}
+    saved = st.session_state.get(P + "positions") or {}
+    out = {}
+    for k, v in saved.items():
+        if k in ids and isinstance(v, (tuple, list)) and len(v) == 2:
+            try:
+                out[k] = (int(v[0]), int(v[1]))
+            except (TypeError, ValueError):
+                continue
+    return out
+
+
+def _capture_positions(nodes: list[dict]) -> int:
+    """Read the viewer-published ``fc8_pos`` query param, validate it, and
+    store surviving positions in session state. Returns the count kept."""
+    raw = st.query_params.get(core.POS_PARAM)
+    parsed = core.parse_positions_param(raw)
+    ids = {str(n.get("id", "")).strip() for n in nodes}
+    kept = {k: v for k, v in parsed.items() if k in ids}
+    if kept:
+        st.session_state[P + "positions"] = kept
+    return len(kept)
 
 
 def _render_audit_card(audit: dict) -> None:
@@ -255,8 +284,7 @@ with tab_edit:
 # ========================================================== TAB 2 ===
 with tab_preview:
     st.subheader("Interactive preview")
-    with st.container(border=True):
-        st.subheader("🎛️ Viewer style & layout")
+    with st.expander("⚙️ Settings — viewer style & layout", expanded=True):
         c1, c2, c3 = st.columns(3)
         with c1:
             st.radio("Layout direction", ("Left-to-Right", "Top-to-Bottom"),
@@ -335,11 +363,48 @@ with tab_preview:
             title = st.session_state.get(P + "title", "Flowchart")
             opts = _viewer_opts()
             sizes = _node_sizes(nodes, opts)
+            cpos = _custom_positions(nodes)
             html_doc = core.render_viewer_html(title, nodes, edges,
-                                              sizes=sizes, **opts)
+                                              sizes=sizes, positions=cpos,
+                                              **opts)
             _, sw, sh = core.layout(nodes, edges, opts["direction"],
-                                    opts["gap_x"], opts["gap_y"], sizes=sizes)
+                                    opts["gap_x"], opts["gap_y"],
+                                    sizes=sizes, positions=cpos)
             components.html(html_doc, height=min(900, sh + 300), scrolling=True)
+            note = st.session_state.pop(P + "cap_note", None)
+            if note == "empty":
+                st.warning("⚠️ No positions received from the canvas — drag "
+                           "a node first, then capture. (If this keeps "
+                           "happening, the browser is blocking the viewer "
+                           "from reporting positions.)")
+            elif note and note.startswith("ok:"):
+                st.success(f"📌 Captured {note[3:]} node position(s) — "
+                           "exports will open with your dragged layout.")
+            cap1, cap2, cap3 = st.columns([1.4, 1, 2.6])
+            with cap1:
+                if st.button("📌 Capture canvas positions",
+                             key=P + "cap_pos",
+                             help="Reads the live node coordinates the "
+                                  "viewer published and stores them, so "
+                                  "exports open with your dragged layout. "
+                                  "Drag nodes on the canvas first."):
+                    n = _capture_positions(nodes)
+                    st.session_state[P + "cap_note"] = (f"ok:{n}"
+                                                       if n else "empty")
+                    st.rerun()
+            with cap2:
+                if st.button("✖ Clear positions", key=P + "clr_pos",
+                             help="Forget captured positions — preview and "
+                                  "exports return to auto-layout."):
+                    st.session_state.pop(P + "positions", None)
+                    st.rerun()
+            with cap3:
+                n = len(cpos)
+                st.caption(f"📌 {n} custom position(s) active — preview and "
+                           "exports use your dragged layout."
+                           if n else
+                           "Drag nodes on the canvas, then 📌 Capture — "
+                           "your layout is baked into exports.")
 
 # ========================================================== TAB 3 ===
 with tab_export:
@@ -366,14 +431,21 @@ with tab_export:
             opts = _viewer_opts()
             sizes = _node_sizes(nodes, opts)
             # Read-only end-user deliverable: no authoring toolbar, dragging
-            # locked unless the author explicitly allows it.
+            # locked unless the author explicitly allows it. Captured drag
+            # positions are baked in so the file opens on the author's layout.
+            cpos = _custom_positions(nodes)
             export_opts = dict(opts, sizes=sizes, show_toolbar=False,
                                allow_drag=bool(
                                    st.session_state.get(P + "allow_drag",
-                                                        False)))
+                                                        False)),
+                               positions=cpos)
             raw_html = core.render_viewer_html(title, nodes, edges,
                                                **export_opts)
             _render_audit_card(core.audit_html_security(raw_html))
+            if cpos:
+                st.caption(f"📌 Exporting with {len(cpos)} captured canvas "
+                           "position(s) — the file opens with your dragged "
+                           "layout, not the auto-layout.")
             use_csp = st.checkbox(
                 "🔒 Inject Zero-Exfiltration CSP Header",
                 value=True, key=P + "csp",
@@ -411,7 +483,8 @@ with tab_export:
                                                sizes=sizes,
                                                title_fs=opts["title_fs"],
                                                subtitle_fs=opts["subtitle_fs"],
-                                               edge_fs=opts["edge_fs"]),
+                                               edge_fs=opts["edge_fs"],
+                                               positions=cpos),
                                    f"{stem}.svg", "image/svg+xml",
                                    key=P + "dl_svg")
             st.caption("PowerPoint: Insert → Pictures → this SVG (ungroup to edit "

@@ -87,6 +87,8 @@ check("pypdfium2 swapped",
       core.apply_wasm_substitutions(["pypdfium2", "pandas"]) == ["pypdf", "pandas"])
 check("pdfplumber dropped",
       core.apply_wasm_substitutions(["pdfplumber", "pandas"]) == ["pandas"])
+check("pymupdf dropped (no Pyodide wheel)",
+      core.apply_wasm_substitutions(["pymupdf", "pandas"]) == ["pandas"])
 check("case-insensitive",
       core.apply_wasm_substitutions(["PyPDFium2"]) == ["pypdf"])
 check("dedup on swap",

@@ -309,16 +309,20 @@ def _incoming(nid: str, edges: list[dict]) -> list[dict]:
 # ------------------------------------------------------------ layout
 def layout(nodes: list[dict], edges: list[dict], direction: str = "LR",
            gap_x: int = GAP_X, gap_y: int = GAP_Y,
-           sizes: dict | None = None
+           sizes: dict | None = None,
+           positions: dict[str, tuple[int, int]] | None = None
            ) -> tuple[dict[str, tuple[int, int]], int, int]:
     """Layered layout. ``direction``: "LR" (depth -> columns, left to right)
     or "TB" (depth -> rows, top to bottom). ``gap_x``/``gap_y`` are the
     horizontal/vertical spacing between node blocks. ``sizes`` optionally
     maps node id -> (w, h) (see ``node_boxes()``); wider nodes push the
     following layers out so same-rank neighbours never overlap. With
-    ``sizes=None`` every node is NODE_W x NODE_H. Returns
-    ({id: (x, y)}, svg_w, svg_h) with a tight bounding box (see
-    ``_tight_box``)."""
+    ``sizes=None`` every node is NODE_W x NODE_H. ``positions`` optionally
+    maps node id -> (x, y) captured canvas coordinates (e.g. from dragging
+    nodes in the viewer); those nodes keep their custom coordinates and
+    auto-layout is skipped for them, while every other node is
+    auto-laid-out as usual. Returns ({id: (x, y)}, svg_w, svg_h) with a
+    tight bounding box (see ``_tight_box``)."""
     direction = "TB" if str(direction).upper() == "TB" else "LR"
     gap_x, gap_y = int(gap_x), int(gap_y)
     ids = [str(n.get("id", "")).strip() for n in nodes]
@@ -375,6 +379,14 @@ def layout(nodes: list[dict], edges: list[dict], direction: str = "LR",
             for nid in col:
                 pos[nid] = (xs[d], y)
                 y += _box_wh(nid, sizes)[1] + gap_y
+    if positions:
+        # Captured drag positions win over auto-layout (per node).
+        for nid, xy in positions.items():
+            if nid in pos and isinstance(xy, (tuple, list)) and len(xy) == 2:
+                try:
+                    pos[nid] = (int(xy[0]), int(xy[1]))
+                except (TypeError, ValueError):
+                    continue
     return pos, *_tight_box(pos, sizes)[2:]
 
 
@@ -394,6 +406,47 @@ def _tight_box(pos: dict[str, tuple[int, int]],
     r = max(x + _box_wh(nid, sizes)[0] for nid, (x, _) in pos.items())
     b = max(y + _box_wh(nid, sizes)[1] for nid, (_, y) in pos.items())
     return l - 12, t - 12, r - l + 24, b - t + 37
+
+
+# Query-param key the viewer JS uses (best-effort, same-origin only) to
+# publish live canvas positions to the parent Streamlit page, so the
+# author can capture dragged coordinates for export. The app reads it via
+# ``st.query_params`` and validates it with ``parse_positions_param``.
+POS_PARAM = "fc8_pos"
+_POS_CLAMP = 10000
+
+
+def parse_positions_param(raw: str | None) -> dict[str, tuple[int, int]]:
+    """Parse a captured canvas-positions payload: JSON
+    ``{node_id: [x, y]}`` as published by the viewer under ``POS_PARAM``.
+
+    Never raises — anything missing, malformed, or out of range yields
+    ``{}`` (or drops just the offending entry). Coordinates are rounded
+    to ints and clamped to ±``_POS_CLAMP`` px.
+    """
+    if not raw or not isinstance(raw, str):
+        return {}
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    out: dict[str, tuple[int, int]] = {}
+    for nid, xy in data.items():
+        nid = str(nid).strip()
+        if not nid or not isinstance(xy, (list, tuple)) or len(xy) != 2:
+            continue
+        try:
+            x, y = float(xy[0]), float(xy[1])
+        except (TypeError, ValueError):
+            continue
+        if x != x or y != y:  # NaN
+            continue
+        if abs(x) > _POS_CLAMP or abs(y) > _POS_CLAMP:
+            continue
+        out[nid] = (int(round(x)), int(round(y)))
+    return out
 
 
 def _wrap(text: str, width: int = 20) -> list[str]:
@@ -806,8 +859,18 @@ window.addEventListener('mousemove',ev=>{
 window.addEventListener('mouseup',()=>{
   if(!drag)return;
   const d=drag;drag=null;
-  if(d.moved)suppressClick=true;else select(d.nid);
+  if(d.moved){suppressClick=true;syncPosToParent();}else select(d.nid);
 });
+function syncPosToParent(){
+  try{
+    if(!window.parent||window.parent===window)return;
+    const cur={};
+    for(const nid in pos){cur[nid]=[Math.round(ex(nid)),Math.round(ey(nid))];}
+    const u=new URL(window.parent.location.href);
+    u.searchParams.set(__POSKEY__,JSON.stringify(cur));
+    window.parent.history.replaceState(null,'',u);
+  }catch(e){/* sandboxed or cross-origin iframe: no round-trip available */}
+}
 document.querySelector('.diagram-card').addEventListener('click',ev=>{
   if(suppressClick){suppressClick=false;return;}
   if(ev.target.closest('.node')||ev.target.closest('button')||ev.target.closest('select'))return;
@@ -827,6 +890,7 @@ const pSel=document.getElementById('panelPosSel');
 if(pSel){pSel.value=__PANEL__;pSel.addEventListener('change',()=>{layoutEl.dataset.panel=pSel.value;});}
 renderDefaultPanel();
 if(ROOT&&NODES[ROOT])select(ROOT);
+syncPosToParent();
 """
 
 
@@ -857,7 +921,9 @@ def render_viewer_html(title: str, nodes: list[dict], edges: list[dict],
                        edge_fs: float = 11.0, panel_fs: float = 13.0,
                        sizes: dict | None = None,
                        show_toolbar: bool = True, allow_drag: bool = True,
-                       hint_text: str = "", show_legend: bool = True) -> str:
+                       hint_text: str = "", show_legend: bool = True,
+                       positions: dict[str, tuple[int, int]] | None = None
+                       ) -> str:
     """Self-contained interactive viewer — double-clickable in any browser.
 
     direction: "LR" (left-to-right) or "TB" (top-to-bottom); gap_x/gap_y
@@ -874,7 +940,10 @@ def render_viewer_html(title: str, nodes: list[dict], edges: list[dict],
     positions / panel switcher). allow_drag: nodes draggable in the
     viewer (locked read-only view when False). hint_text: optional
     instructional line (empty renders nothing). show_legend: bottom
-    legend bar toggle.
+    legend bar toggle. positions: optional {node_id: (x, y)} captured
+    canvas coordinates (see ``layout()``) — embedded as the nodes' base
+    positions so the exported file opens exactly where the author dragged
+    them; auto-layout is skipped for those nodes.
     """
     direction = "TB" if str(direction).upper() == "TB" else "LR"
     panel = str(panel or "bottom").lower()
@@ -889,7 +958,8 @@ def render_viewer_html(title: str, nodes: list[dict], edges: list[dict],
                                _node_by_id(nodes).get(nid, {}))[0] or nid),
                              "sl": []})
                  for nid, s in sizes.items()}
-    pos, sw, sh = layout(nodes, edges, direction, gap_x, gap_y, sizes)
+    pos, sw, sh = layout(nodes, edges, direction, gap_x, gap_y, sizes,
+                      positions)
     by_id = _node_by_id(nodes)
     js_nodes = {}
     for nid in pos:
@@ -931,7 +1001,8 @@ def render_viewer_html(title: str, nodes: list[dict], edges: list[dict],
           .replace("__INFO_H__", _js_str(heading))
           .replace("__INFO_C__", _js_str(body_text))
           .replace("__ROOT__", _js_str(root))
-          .replace("__PANEL__", json.dumps(panel)))
+          .replace("__PANEL__", json.dumps(panel))
+          .replace("__POSKEY__", json.dumps(POS_PARAM)))
     body = _svg_body(nodes, edges, pos, sw, sh, t, direction=direction,
                      sizes=sizes, boxes=boxes, title_fs=title_fs,
                      subtitle_fs=subtitle_fs, edge_fs=edge_fs)
@@ -1007,10 +1078,12 @@ def to_svg(nodes: list[dict], edges: list[dict], title: str = "",
            direction: str = "LR", gap_x: int = GAP_X, gap_y: int = GAP_Y,
            theme: str = "dark", sizes: dict | None = None,
            title_fs: float = 13.5, subtitle_fs: float = 11.5,
-           edge_fs: float = 11.0) -> str:
+           edge_fs: float = 11.0,
+           positions: dict[str, tuple[int, int]] | None = None) -> str:
     """Static SVG export (for PowerPoint / docs). Theme colors and font
     sizes are baked in as literal attributes so the file is
-    self-contained."""
+    self-contained. ``positions`` optionally overrides auto-layout per
+    node (see ``layout()``)."""
     direction = "TB" if str(direction).upper() == "TB" else "LR"
     t = resolve_theme(theme)
     boxes = None
@@ -1018,7 +1091,8 @@ def to_svg(nodes: list[dict], edges: list[dict], title: str = "",
         boxes = {nid: (s if isinstance(s, dict) and "tl" in s
                        else {"w": s[0], "h": s[1], "tl": [""], "sl": []})
                  for nid, s in sizes.items()}
-    pos, sw, sh = layout(nodes, edges, direction, gap_x, gap_y, sizes)
+    pos, sw, sh = layout(nodes, edges, direction, gap_x, gap_y, sizes,
+                         positions)
     top = 44 if title else 0
     title_el = (f'<text x="{PAD}" y="30" font-size="20" font-weight="700" '
                 f'fill="{t["text"]}" font-family="Segoe UI, Arial, sans-serif">'

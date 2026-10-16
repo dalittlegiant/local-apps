@@ -106,9 +106,10 @@ except ValueError:
 pt = make_pdf(2, with_table=True)
 tables = core.extract_tables(pt)
 check("table found", len(tables) >= 1)
-pi, ti, df = tables[0]
+pi, ti, df, strat = tables[0]
 check("table header", list(df.columns)[:2] == ["Name", "Amt"], str(list(df.columns)))
 check("table rows", len(df) == 2 and df.iloc[0, 0] == "Amy")
+check("strategy reported", strat in core.STRATEGY_LABELS, strat)
 xl = core.tables_to_excel(tables)
 check("tables excel non-empty", len(xl) > 1000)
 try:
@@ -116,6 +117,95 @@ try:
     check("tables excel empty rejected", False)
 except ValueError:
     check("tables excel empty rejected", True)
+
+# --- multi-strategy table extraction ------------------------------------------
+def make_bordered_table_pdf() -> bytes:
+    """Real vector grid lines (reportlab Table with GRID style)."""
+    from reportlab.lib.pagesizes import A4
+    from reportlab.pdfgen import canvas
+    from reportlab.platypus import Table, TableStyle
+    from reportlab.lib import colors
+    buf = io.BytesIO()
+    c = canvas.Canvas(buf, pagesize=A4)
+    t = Table([["Name", "Dept", "Amt"],
+               ["Amy", "Sales", "10"],
+               ["Bob", "IT", "20"]])
+    t.setStyle(TableStyle([("GRID", (0, 0), (-1, -1), 1, colors.black)]))
+    t.wrapOn(c, 72, 500)
+    t.drawOn(c, 72, 500)
+    c.showPage()
+    c.save()
+    return buf.getvalue()
+
+
+def make_borderless_table_pdf() -> bytes:
+    """Shaded banding, aligned columns, zero grid lines."""
+    from reportlab.lib.pagesizes import A4
+    from reportlab.pdfgen import canvas
+    from reportlab.lib import colors
+    buf = io.BytesIO()
+    c = canvas.Canvas(buf, pagesize=A4)
+    rows = [["Name", "Dept", "Amt"],
+            ["Amy", "Sales", "10"],
+            ["Bob", "IT", "20"],
+            ["Cat", "HR", "30"]]
+    y = 700
+    for i, row in enumerate(rows):
+        if i % 2 == 0:  # shaded bands, no lines
+            c.setFillColor(colors.HexColor("#E8EEF7"))
+            c.rect(60, y - 14, 480, 20, stroke=0, fill=1)
+        c.setFillColor(colors.black)
+        c.setFont("Helvetica-Bold" if i == 0 else "Helvetica", 11)
+        c.drawString(70, y, row[0])
+        c.drawString(220, y, row[1])
+        c.drawString(370, y, row[2])
+        y -= 28
+    c.showPage()
+    c.save()
+    return buf.getvalue()
+
+
+bordered = make_bordered_table_pdf()
+bt = core.extract_tables(bordered, mode="auto")
+check("auto: bordered table found", len(bt) >= 1)
+_, _, bdf, bstrat = bt[0]
+check("auto: bordered uses grid strategy", bstrat == "grid", bstrat)
+check("auto: bordered content",
+      list(bdf.columns) == ["Name", "Dept", "Amt"]
+      and len(bdf) == 2 and bdf.iloc[1, 0] == "Bob",
+      str(list(bdf.columns)))
+
+borderless = make_borderless_table_pdf()
+ut = core.extract_tables(borderless, mode="auto")
+check("auto: borderless table found", len(ut) >= 1)
+_, _, udf, ustrat = ut[0]
+check("auto: borderless falls back past grid",
+      ustrat in ("text", "pymupdf-text"), ustrat)
+check("auto: borderless content",
+      list(udf.columns) == ["Name", "Dept", "Amt"]
+      and len(udf) == 3 and udf.iloc[2, 0] == "Cat",
+      str(list(udf.columns)) + str(len(udf)))
+
+gt = core.extract_tables(bordered, mode="grid")
+check("forced grid: bordered found via grid",
+      len(gt) >= 1 and gt[0][3] == "grid",
+      str([t[3] for t in gt]))
+gt2 = core.extract_tables(borderless, mode="grid")
+check("forced grid: borderless yields nothing",
+      all(t[3] in ("grid", "pymupdf") for t in gt2) and
+      not any(t[3] == "grid" for t in gt2),
+      str([t[3] for t in gt2]))
+
+bt2 = core.extract_tables(borderless, mode="borderless")
+check("forced borderless: table found, no grid",
+      len(bt2) >= 1 and bt2[0][3] in ("text", "pymupdf-text"),
+      str([t[3] for t in bt2]))
+
+try:
+    core.extract_tables(bordered, mode="bogus")
+    check("bad mode rejected", False)
+except ValueError:
+    check("bad mode rejected", True)
 
 # --- beautify -----------------------------------------------------------------
 img = Image.new("RGB", (200, 100), "white")

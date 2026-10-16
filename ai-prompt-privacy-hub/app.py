@@ -165,6 +165,11 @@ with tab_mask:
                 st.session_state[P + "restored"] = core.unmask_text(ai_out, mapping)
             restored = st.session_state.get(P + "restored")
             if restored:
+                st.subheader("✨ Highlighted preview")
+                st.markdown(core.highlight_unmasked(restored, mapping),
+                            unsafe_allow_html=True)
+                st.caption("Restored keywords are highlighted above — the box "
+                           "below holds the clean, copy-pasteable text.")
                 st.subheader("Restored output")
                 st.code(restored, language="text")
 
