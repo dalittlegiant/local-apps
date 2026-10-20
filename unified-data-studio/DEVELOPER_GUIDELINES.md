@@ -26,6 +26,7 @@ local productivity & governance tools behind `st.navigation`:
 ```
 unified-data-studio/
 ├── launcher.py            # entrypoint: set_page_config + st.navigation only
+├── .streamlit/config.toml # script-level server config for the launcher (see Rules)
 ├── pages/
 │   ├── metadata_dax_editor.py
 │   ├── security_command_center.py
@@ -47,6 +48,14 @@ it; standalone `app.py` files use the guarded try/except pattern from the
 root guide); session-state keys are prefixed per page (`tmdl_`, `sec_`,
 `thu_`) because state is global across MPA pages; `lib/` stays
 Streamlit-free.
+
+**Server config**: `.streamlit/config.toml` sits beside `launcher.py`
+because Streamlit resolves server settings from the main script's folder
+plus the launch folder only — page apps' own configs (e.g. the DuckDB
+sandbox's) are NOT inherited by the launcher. This file carries
+`maxUploadSize = 1000` (MB) so the 1 GB upload ceiling applies to every
+launcher page regardless of the folder the launcher is started from;
+keep it in sync with the repo-root config.
 
 **Sidebar theme** (in `launcher.py`, injected CSS): emojis on the 5 pillar
 headers only, no icons on `st.Page` items; sub-items get a `::before`

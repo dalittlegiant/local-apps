@@ -23,7 +23,7 @@ data-diff-duckdb-sandbox/
 ├── app.py                  # Streamlit UI only
 ├── diff_core.py            # pure logic — no st.*
 ├── tests/run_tests.py      # 34 checks, no Streamlit needed
-├── .streamlit/config.toml  # maxUploadSize=500 (also at repo root)
+├── .streamlit/config.toml  # maxUploadSize=1000 (also at repo root + launcher dir)
 └── requirements.txt        # + duckdb, pyarrow
 ```
 

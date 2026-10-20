@@ -56,6 +56,14 @@ several tools belong together (`unified-data-studio`). Conventions:
    `[browser] gatherUsageStats = false` (telemetry off) and
    `[server] address = "127.0.0.1"` (loopback-only bind — never expose the
    local server to the LAN). `tests/test_repo_hardening.py` guards both.
+   Config resolution note: Streamlit loads server settings from the
+   launch folder (CWD) and the main script's folder only — an MPA page's
+   own `.streamlit/` is never inherited. Any entrypoint that needs a
+   server setting (e.g. `[server] maxUploadSize` for uploads) must carry
+   its own config beside its entry script: repo root (launch-from-root),
+   `unified-data-studio/` (the launcher), and each heavy-upload
+   standalone app (e.g. `data-diff-duckdb-sandbox/`, 1000 MB). Config
+   changes need a full server restart to take effect.
 7. Sidebar theme (launcher-owned CSS, injected once via `st.markdown(...,
    unsafe_allow_html=True)`): emojis on the 5 pillar headers only —
    `st.Page` items use no icon. Sub-item styling targets
