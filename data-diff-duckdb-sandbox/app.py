@@ -282,7 +282,13 @@ def _full_export(sql: str, fmt: str):
         else:
             con.execute(f"COPY ({sql}) TO '{path}' (FORMAT PARQUET)")
             mime = "application/octet-stream"
-        return f"query_result{suffix}", Path(path).read_bytes(), mime
+        data = Path(path).read_bytes()
+        if fmt == "csv":
+            # DuckDB COPY writes plain UTF-8 with NO BOM; Excel needs the
+            # BOM (utf-8-sig) or Chinese text garbles. Preview downloads
+            # already encode utf-8-sig in _export_buttons.
+            data = core.with_utf8_bom(data)
+        return f"query_result{suffix}", data, mime
     finally:
         try:
             Path(path).unlink(missing_ok=True)

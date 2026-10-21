@@ -22,7 +22,7 @@ freezing — 100% local. Two tools (one tab each):
 data-diff-duckdb-sandbox/
 ├── app.py                  # Streamlit UI only
 ├── diff_core.py            # pure logic — no st.*
-├── tests/run_tests.py      # 39 checks, no Streamlit needed
+├── tests/run_tests.py      # 44 checks, no Streamlit needed
 ├── .streamlit/config.toml  # maxUploadSize=1000 (also at repo root + launcher dir)
 └── requirements.txt        # + duckdb, pyarrow
 ```
@@ -54,6 +54,11 @@ suite launcher, which owns page config).
 - `profile_frame(profile)` — renders either profiler's dict.
 - `run_sql(con, sql)` — DuckDB execute → DataFrame; DB errors surface as
   `ValueError("SQL error: …")`.
+- `with_utf8_bom(data)` — prefixes the UTF-8 BOM (utf-8-sig) if absent.
+  Excel sniffs CSV encoding from the BOM; without it UTF-8 Chinese text
+  garbles. DuckDB `COPY` writes no BOM, so full-result CSV bytes pass
+  through this in `_full_export` (preview CSVs encode `utf-8-sig`
+  directly at the download button).
 - `diff_datasets(old, new, keys)` — keys **string-cast on both sides** so
   int/str drift still joins; duplicate keys produce warnings (not errors).
   Schema diff covers added/removed columns and dtype changes. Added/deleted
@@ -97,7 +102,10 @@ suite launcher, which owns page config).
   `st.info` banner shows the true total when it exceeds 1,000 rows.
   Preview downloads (≤1,000 rows) convert Arrow→pandas, which is trivial
   at that size. Full export is DuckDB `COPY` straight to a temp file —
-  no pandas, no StringIO.
+  no pandas, no StringIO. CSV exports are always **utf-8-sig** (BOM) so
+  Excel renders Chinese correctly: previews via
+  `.encode("utf-8-sig")`, full results via `with_utf8_bom()` on the
+  COPY output (DuckDB itself writes no BOM).
 - **Profiler cache** (`st.session_state["dd5_prof_cache"]`): the
   single-pass `COUNT(DISTINCT)` aggregation scans the full dataset, so
   each table is profiled **once** — expander bodies execute on every
@@ -122,7 +130,9 @@ error paths, temp-file staging (round-trip, outside-repo, suffix),
 `duckdb_source_clause` fragments + xlsx rejection + Safe Mode fragment,
 dirty-CSV end-to-end (30k numeric rows + a string in the BIGINT column:
 strict-mode `profile_duckdb` raises `duckdb.Error` naming line 30002,
-`all_varchar` loads all rows as VARCHAR with the bad value preserved), end-to-end native scan
+`all_varchar` loads all rows as VARCHAR with the bad value preserved),
+export encoding (BOM added, idempotent, Chinese payload round-trips;
+DuckDB COPY output verified BOM-less then fixed), end-to-end native scan
 of a staged CSV, `profile_duckdb` rows/nulls/uniques + frame rendering,
 `profile_duckdb`/`profile_df` parity, added/deleted detection, cell-level
 old→new values, schema add/remove/dtype-change, int-vs-str key

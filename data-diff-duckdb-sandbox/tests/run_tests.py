@@ -180,6 +180,28 @@ check("dirty csv bad value preserved",
       == "91021100/112")
 os.unlink(dirty_path)
 
+# --- export encoding: utf-8-sig (BOM) for Excel -------------------------
+plain = "備註,地區\n中文測試,香港\n".encode("utf-8")
+bombed = core.with_utf8_bom(plain)
+check("bom added", bombed.startswith(core.UTF8_BOM) and bombed[3:] == plain)
+check("bom idempotent", core.with_utf8_bom(bombed) == bombed)
+check("bom payload decodes",
+      bombed.decode("utf-8-sig").splitlines()[1] == "中文測試,香港")
+# End-to-end over the exact _full_export steps: DuckDB COPY writes plain
+# UTF-8 (no BOM — Excel would garble it); the helper fixes the bytes.
+fd, cpath = tempfile.mkstemp(suffix=".csv")
+os.close(fd)
+con_bom = duckdb.connect()
+con_bom.execute("CREATE TABLE cn AS SELECT '中文測試' AS 備註")
+con_bom.execute(f"COPY (SELECT * FROM cn) TO '{cpath}' (HEADER, DELIMITER ',')")
+raw_copy = Path(cpath).read_bytes()
+check("duckdb copy has no bom", not raw_copy.startswith(core.UTF8_BOM))
+fixed_copy = core.with_utf8_bom(raw_copy)
+check("copy export fixed for excel",
+      fixed_copy.startswith(core.UTF8_BOM)
+      and "中文測試" in fixed_copy.decode("utf-8-sig"))
+os.unlink(cpath)
+
 # end-to-end: staged csv scanned natively, no pandas involved
 tpath2 = core.write_upload_to_temp("t.csv", b"a,b\n1,x\n2,\n3,y\n")
 con2 = duckdb.connect()

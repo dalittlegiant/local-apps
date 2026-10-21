@@ -168,6 +168,22 @@ def run_sql(con, sql: str) -> pd.DataFrame:
         raise ValueError(f"SQL error: {exc}") from exc
 
 
+# ---------------------------------------------------------- exporting
+UTF8_BOM = b"\xef\xbb\xbf"
+
+
+def with_utf8_bom(data: bytes) -> bytes:
+    """Return UTF-8 bytes prefixed with the BOM (i.e. utf-8-sig).
+
+    Microsoft Excel detects a CSV's encoding from the BOM — without it a
+    UTF-8 file falls back to the system ANSI codepage and Chinese text
+    renders as mojibake (亂碼). DuckDB's ``COPY ... TO`` writes plain
+    UTF-8 with no BOM, so CSV export bytes pass through here first.
+    Idempotent: bytes that already start with the BOM are returned as-is.
+    """
+    return data if data.startswith(UTF8_BOM) else UTF8_BOM + data
+
+
 # -------------------------------------------------------- diff engine
 def _key_str(df: pd.DataFrame, keys: list[str]) -> pd.DataFrame:
     """String-cast key columns so int/str key mismatches still join."""
