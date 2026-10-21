@@ -22,7 +22,7 @@ freezing — 100% local. Two tools (one tab each):
 data-diff-duckdb-sandbox/
 ├── app.py                  # Streamlit UI only
 ├── diff_core.py            # pure logic — no st.*
-├── tests/run_tests.py      # 34 checks, no Streamlit needed
+├── tests/run_tests.py      # 39 checks, no Streamlit needed
 ├── .streamlit/config.toml  # maxUploadSize=1000 (also at repo root + launcher dir)
 └── requirements.txt        # + duckdb, pyarrow
 ```
@@ -40,9 +40,10 @@ suite launcher, which owns page config).
 - `write_upload_to_temp(name, raw)` — stages bytes in the OS temp dir
   (outside the repo; never committable). Returns the path; caller deletes
   it on table drop.
-- `duckdb_source_clause(path, name)` — `read_parquet(...)` /
+- `duckdb_source_clause(path, name, all_varchar=False)` — `read_parquet(...)` /
   `read_csv_auto(...)` FROM-fragment so DuckDB scans the staged file
-  natively.
+  natively. `all_varchar=True` (CSV only) appends `all_varchar=true` —
+  Safe Mode, see below.
 - `excel_sheets(raw)` — workbook sheet names for the per-file selector.
 - `sanitize_table_name(name)` — safe DuckDB identifiers (`t_` prefix for
   leading digits).
@@ -73,6 +74,20 @@ suite launcher, which owns page config).
   Name collisions get `_2`, `_3` suffixes. "Clear all tables" drops the
   views/tables and deletes the temp files (path-mode files are never
   touched).
+- **Safe Mode** (`st.toggle` "Enable Safe Mode (Read all as String)",
+  SQL tab, default OFF): CSV views are created over
+  `read_csv_auto(..., all_varchar=true)`, bypassing type inference so a
+  file whose deep rows violate the sniffed types (e.g. a string in a
+  BIGINT column) still loads — every column as VARCHAR. Registry entries
+  carry a `"safe"` flag; flipping the toggle re-creates the view under
+  the **same table name** (reusing the staged temp file, never staging a
+  second copy) and evicts that table's cached profile. In strict mode
+  the conversion error surfaces at the profiler's full scan: the app
+  catches `duckdb.Error`, shows an `st.error` pointing at the toggle,
+  and puts the raw traceback (which names the exact file line) in a
+  "View Error Details & Line Number" expander — it never crashes.
+  CSV-only by design: parquet keeps native types, xlsx and the whole
+  Diff tab already load through pandas as text.
 - **Connection** (`_con()`): single persistent in-memory DuckDB connection
   via `@st.cache_resource` — views and file metadata stay hot between
   queries. Single-user local app: no cross-thread sharing.
@@ -104,7 +119,10 @@ suite launcher, which owns page config).
 `python3 tests/run_tests.py` covers: csv/parquet loading, unsupported-type
 rejection, table-name sanitizing, null-%/memory profiling, SQL success +
 error paths, temp-file staging (round-trip, outside-repo, suffix),
-`duckdb_source_clause` fragments + xlsx rejection, end-to-end native scan
+`duckdb_source_clause` fragments + xlsx rejection + Safe Mode fragment,
+dirty-CSV end-to-end (30k numeric rows + a string in the BIGINT column:
+strict-mode `profile_duckdb` raises `duckdb.Error` naming line 30002,
+`all_varchar` loads all rows as VARCHAR with the bad value preserved), end-to-end native scan
 of a staged CSV, `profile_duckdb` rows/nulls/uniques + frame rendering,
 `profile_duckdb`/`profile_df` parity, added/deleted detection, cell-level
 old→new values, schema add/remove/dtype-change, int-vs-str key

@@ -146,6 +146,39 @@ try:
     check("source clause rejects xlsx", False)
 except ValueError:
     check("source clause rejects xlsx", True)
+check("source clause csv safe mode",
+      core.duckdb_source_clause("/tmp/x.csv", "x.csv", all_varchar=True)
+      == "read_csv_auto('/tmp/x.csv', all_varchar=true)")
+
+# --- Safe Mode: dirty CSV (type violation past the sniffer's sample) ---
+# The sniffer infers BIGINT from the first rows it samples; the string on
+# the final line must raise a duckdb.Error naming the line in strict
+# mode, and load verbatim with all_varchar=true (Safe Mode).
+dirty_rows = ["id,label"] + [f"{i},item{i}" for i in range(1, 30001)]
+dirty_rows.append("91021100/112,badrow")
+dirty_path = core.write_upload_to_temp(
+    "dirty.csv", ("\n".join(dirty_rows) + "\n").encode())
+con_dirty = duckdb.connect()
+con_dirty.execute('CREATE OR REPLACE VIEW v_strict AS SELECT * FROM '
+                  + core.duckdb_source_clause(dirty_path, "dirty.csv"))
+try:
+    core.profile_duckdb(con_dirty, "v_strict")
+    check("dirty csv strict mode raises", False)
+except duckdb.Error as e:
+    check("dirty csv strict mode raises", "Line: 30002" in str(e),
+          str(e)[:120])
+con_dirty.execute('CREATE OR REPLACE VIEW v_safe AS SELECT * FROM '
+                  + core.duckdb_source_clause(dirty_path, "dirty.csv",
+                                              all_varchar=True))
+prof_safe = core.profile_duckdb(con_dirty, "v_safe")
+check("dirty csv safe mode loads", prof_safe["rows"] == 30001)
+check("dirty csv safe mode all varchar",
+      all(c["dtype"] == "VARCHAR" for c in prof_safe["columns"]))
+check("dirty csv bad value preserved",
+      con_dirty.execute(
+          "SELECT id FROM v_safe WHERE label = 'badrow'").fetchone()[0]
+      == "91021100/112")
+os.unlink(dirty_path)
 
 # end-to-end: staged csv scanned natively, no pandas involved
 tpath2 = core.write_upload_to_temp("t.csv", b"a,b\n1,x\n2,\n3,y\n")

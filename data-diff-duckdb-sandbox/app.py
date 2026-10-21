@@ -17,6 +17,7 @@ import os
 import sys
 import tempfile
 import time
+import traceback
 from pathlib import Path
 
 import duckdb
@@ -119,19 +120,21 @@ def _norm_source(kind: str, raw) -> dict:
             "key": ("path", str(p.resolve()) if p.exists() else s)}
 
 
-def _ingest_src(src: dict, sheet=None) -> str:
+def _ingest_src(src: dict, sheet=None, safe_mode: bool = False) -> str:
     """Stage + register a source exactly once.
 
     Uploads: parquet/csv staged to the OS temp dir and scanned natively by
     DuckDB (VIEW); xlsx parsed once into a DuckDB TABLE.
     Local paths: parquet/csv are queried IN PLACE — DuckDB reads the file
     directly, bypassing Python memory entirely; xlsx is read once via pandas.
+    ``safe_mode`` (CSV only) points the view at
+    ``read_csv_auto(..., all_varchar=true)`` so a file whose deep rows
+    violate the sniffed types still loads — every column as VARCHAR.
+    Flipping it re-creates the view under the same table name.
     Returns the table name. Never re-parses on Streamlit reruns.
     """
     key = src["key"] + (sheet,)
     reg = _registry()
-    if key in reg:
-        return reg[key]["tname"]
     con = _con()
     if src["kind"] == "upload":
         up = src["up"]
@@ -144,6 +147,10 @@ def _ingest_src(src: dict, sheet=None) -> str:
             raise ValueError(f"File not found: {src['path']}")
         lname, base, disp = p.name.lower(), core.sanitize_table_name(p.name), p.name
         raw, staged = None, False
+    want_safe = bool(safe_mode) and lname.endswith(".csv")
+    existing = reg.get(key)
+    if existing is not None and existing.get("safe", False) == want_safe:
+        return existing["tname"]
     if lname.endswith((".xlsx", ".xls")):
         data = raw if raw is not None else Path(src["path"]).read_bytes()
         df = core.load_upload(disp, data, sheet=sheet)
@@ -157,17 +164,27 @@ def _ingest_src(src: dict, sheet=None) -> str:
                 con.unregister("__dd5_tmp")
             except Exception:
                 pass
-        reg[key] = {"tname": tname, "kind": "table", "path": None}
+        reg[key] = {"tname": tname, "kind": "table", "path": None,
+                    "safe": False}
     elif lname.endswith((".parquet", ".csv")):
         if staged:
-            fpath = core.write_upload_to_temp(disp, raw)
+            # Only the Safe Mode flag flipped → reuse the staged temp file
+            # instead of staging (and leaking) a second copy.
+            fpath = (existing or {}).get("path") \
+                or core.write_upload_to_temp(disp, raw)
             cleanup = fpath
         else:
             fpath, cleanup = str(Path(src["path"])), None  # DuckDB reads in place
-        tname = _unique_tname(base)
-        clause = core.duckdb_source_clause(fpath, disp)
+        tname = existing["tname"] if existing else _unique_tname(base)
+        clause = core.duckdb_source_clause(fpath, disp, all_varchar=want_safe)
         con.execute(f'CREATE OR REPLACE VIEW "{tname}" AS SELECT * FROM {clause}')
-        reg[key] = {"tname": tname, "kind": "view", "path": cleanup}
+        reg[key] = {"tname": tname, "kind": "view", "path": cleanup,
+                    "safe": want_safe}
+        # The (re)created view may have a different shape — drop any
+        # profile cached against the old definition.
+        prof_cache = st.session_state.get(P + "prof_cache")
+        if prof_cache is not None:
+            prof_cache.pop(tname, None)
     else:
         raise ValueError(f"Unsupported file type: {disp} (use .parquet/.csv/.xlsx)")
     return tname
@@ -311,6 +328,16 @@ with tab_sql:
     with st.container(border=True):
         src_mode = st.radio("Input method", ("Upload File", "Read from Local Path"),
                             horizontal=True, key=P + "srcmode")
+        safe_mode = st.toggle("Enable Safe Mode (Read all as String)",
+                              value=False, key=P + "safe_mode")
+        st.caption("Safe Mode applies to **CSV** files only: DuckDB reads "
+                   "every column as text (`all_varchar=true`), bypassing "
+                   "type inference so a file with dirty rows always loads. "
+                   "Leave it OFF for normal typed loading — if a CSV fails "
+                   "with a type conversion error, the profiler below shows "
+                   "the exact line to cleanse, and this toggle is the "
+                   "bypass. Parquet keeps its native types; Excel already "
+                   "loads as text.")
         sources: list = []
         if src_mode == "Upload File":
             ups = st.file_uploader("Data files (.parquet / .csv / .xlsx)",
@@ -344,9 +371,10 @@ with tab_sql:
                     sheet = st.selectbox(
                         f"Sheet for {label}", sheets,
                         key=P + f"sheet_{src['key'][0]}_{label}")
-                    tnames.append(_ingest_src(src, sheet=sheet))
+                    tnames.append(_ingest_src(src, sheet=sheet,
+                                              safe_mode=safe_mode))
                 else:
-                    tnames.append(_ingest_src(src))
+                    tnames.append(_ingest_src(src, safe_mode=safe_mode))
             except ValueError as e:
                 st.error(f"⚠️ {label}: {e}")
 
@@ -371,6 +399,26 @@ with tab_sql:
                                 with st.spinner(f"Profiling `{tname}`…"):
                                     prof_cache[tname] = core.profile_duckdb(
                                         _con(), tname)
+                            except duckdb.Error:
+                                # Strict type inference hit dirty data
+                                # (e.g. a string deep inside a BIGINT
+                                # column). Never crash: keep the raw
+                                # traceback visible — it names the exact
+                                # file line to cleanse — and point to the
+                                # Safe Mode bypass.
+                                st.error(
+                                    f"⚠️ `{tname}`: DuckDB hit a data type "
+                                    "conversion error while scanning this "
+                                    "CSV in strict mode. Cleanse the source "
+                                    "file at the line shown below, or "
+                                    "enable **Safe Mode (Read all as "
+                                    "String)** above to force-load the "
+                                    "file as text.")
+                                with st.expander(
+                                        "View Error Details & Line Number"):
+                                    st.code(traceback.format_exc(),
+                                            language="text")
+                                continue
                             except Exception as e:
                                 st.error(f"⚠️ Could not profile `{tname}`: {e}")
                                 continue
