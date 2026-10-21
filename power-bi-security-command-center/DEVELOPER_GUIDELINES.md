@@ -73,6 +73,8 @@ Joined after explosion for friendly display; unknown codes fall back to the code
 - Session state: `hr_current`, `store_master_current`, `audit_log`,
   `final_rls`, `delta_res`, `gap_res`. The audit log is in-memory —
   **download the CSV** before closing the browser.
+- All CSV downloads (results, audit log, 📥 template files) encode
+  `utf-8-sig` per the root guide, so Excel opens Chinese text cleanly.
 
 ## Testing
 

@@ -116,7 +116,9 @@ exceptions win → explode → master join → `NO RULE` rows stay visible.
 `compute_deltas` (leavers/joiners/movers, anti-joins with `indicator=True`
 on `Work Email`), `gap_analysis` (expected vs audit pairs, both directions).
 `warn_unmapped` from v4 was de-streamlit-ified: the lib returns the lists,
-the page renders the red warning.
+the page renders the red warning. All CSV downloads on this page
+(results, audit register, 📥 template files) encode `utf-8-sig` per the
+root guide, so Excel opens Chinese text cleanly.
 
 ## App 3 — theme schema notes (`lib/theme_builder.py`)
 

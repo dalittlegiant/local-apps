@@ -575,13 +575,13 @@ with tab_rls:
         with st.expander("📥 Download template files"):
             st.download_button(
                 "Rule_Book template",
-                sample_rule_book().to_csv(index=False).encode(),
+                sample_rule_book().to_csv(index=False).encode("utf-8-sig"),
                 "Rule_Book_template.csv",
                 "text/csv",
             )
             st.download_button(
                 "Exceptions template",
-                sample_exceptions().to_csv(index=False).encode(),
+                sample_exceptions().to_csv(index=False).encode("utf-8-sig"),
                 "Exceptions_template.csv",
                 "text/csv",
             )
