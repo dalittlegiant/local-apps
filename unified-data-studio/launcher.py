@@ -117,6 +117,9 @@ pg = st.navigation(
             st.Page("pages/security_command_center.py",
                     title="Security Command Center",
                     url_path="security-command-center"),
+            st.Page("../power-apps-alm-masking/app.py",
+                    title="Power Apps ALM & Masking",
+                    url_path="power-apps-alm-masking"),
         ],
         "🎨 Design & Visual Studio": [
             st.Page("pages/theme_ui_studio.py",

@@ -46,8 +46,15 @@ unified-data-studio/
 Rules: `launcher.py` owns `set_page_config` (suite `pages/` must not call
 it; standalone `app.py` files use the guarded try/except pattern from the
 root guide); session-state keys are prefixed per page (`tmdl_`, `sec_`,
-`thu_`) because state is global across MPA pages; `lib/` stays
-Streamlit-free.
+`thu_`, `pam_` for the Power Apps ALM & Masking page) because state is
+global across MPA pages; `lib/` stays Streamlit-free.
+
+External pages (standalone `app.py` files in sibling app dirs, registered
+in `launcher.py` with `../<app>/app.py` paths) include the DuckDB sandbox,
+Messy Excel Sanitizer, Data Quality Watchdog, PPT builder, Flowchart
+Studio, Stlite builder, Meeting Hub, Comms PDF Toolkit, Prompt Privacy
+Hub, Snippet Vault, and — in the Governance & Security pillar — the
+Power Apps ALM & Masking Tool (`../power-apps-alm-masking/app.py`).
 
 **Server config**: `.streamlit/config.toml` sits beside `launcher.py`
 because Streamlit resolves server settings from the main script's folder
