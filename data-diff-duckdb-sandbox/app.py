@@ -120,7 +120,8 @@ def _norm_source(kind: str, raw) -> dict:
             "key": ("path", str(p.resolve()) if p.exists() else s)}
 
 
-def _ingest_src(src: dict, sheet=None, safe_mode: bool = False) -> str:
+def _ingest_src(src: dict, sheet=None, safe_mode: bool = False,
+                lenient_csv: bool = False) -> str:
     """Stage + register a source exactly once.
 
     Uploads: parquet/csv staged to the OS temp dir and scanned natively by
@@ -130,8 +131,10 @@ def _ingest_src(src: dict, sheet=None, safe_mode: bool = False) -> str:
     ``safe_mode`` (CSV only) points the view at
     ``read_csv_auto(..., all_varchar=true)`` so a file whose deep rows
     violate the sniffed types still loads — every column as VARCHAR.
-    Flipping it re-creates the view under the same table name.
-    Returns the table name. Never re-parses on Streamlit reruns.
+    ``lenient_csv`` (CSV only) adds ``null_padding=true`` so rows with
+    fewer columns than the header are padded with NULL instead of
+    erroring. Flipping either re-creates the view under the same table
+    name. Returns the table name. Never re-parses on Streamlit reruns.
     """
     key = src["key"] + (sheet,)
     reg = _registry()
@@ -148,8 +151,11 @@ def _ingest_src(src: dict, sheet=None, safe_mode: bool = False) -> str:
         lname, base, disp = p.name.lower(), core.sanitize_table_name(p.name), p.name
         raw, staged = None, False
     want_safe = bool(safe_mode) and lname.endswith(".csv")
+    want_lenient = bool(lenient_csv) and lname.endswith(".csv")
     existing = reg.get(key)
-    if existing is not None and existing.get("safe", False) == want_safe:
+    if (existing is not None
+            and existing.get("safe", False) == want_safe
+            and existing.get("lenient", False) == want_lenient):
         return existing["tname"]
     if lname.endswith((".xlsx", ".xls")):
         data = raw if raw is not None else Path(src["path"]).read_bytes()
@@ -165,7 +171,7 @@ def _ingest_src(src: dict, sheet=None, safe_mode: bool = False) -> str:
             except Exception:
                 pass
         reg[key] = {"tname": tname, "kind": "table", "path": None,
-                    "safe": False}
+                    "safe": False, "lenient": False}
     elif lname.endswith((".parquet", ".csv")):
         if staged:
             # Only the Safe Mode flag flipped → reuse the staged temp file
@@ -176,10 +182,11 @@ def _ingest_src(src: dict, sheet=None, safe_mode: bool = False) -> str:
         else:
             fpath, cleanup = str(Path(src["path"])), None  # DuckDB reads in place
         tname = existing["tname"] if existing else _unique_tname(base)
-        clause = core.duckdb_source_clause(fpath, disp, all_varchar=want_safe)
+        clause = core.duckdb_source_clause(fpath, disp, all_varchar=want_safe,
+                                           null_padding=want_lenient)
         con.execute(f'CREATE OR REPLACE VIEW "{tname}" AS SELECT * FROM {clause}')
         reg[key] = {"tname": tname, "kind": "view", "path": cleanup,
-                    "safe": want_safe}
+                    "safe": want_safe, "lenient": want_lenient}
         # The (re)created view may have a different shape — drop any
         # profile cached against the old definition.
         prof_cache = st.session_state.get(P + "prof_cache")
@@ -344,6 +351,15 @@ with tab_sql:
                    "the exact line to cleanse, and this toggle is the "
                    "bypass. Parquet keeps its native types; Excel already "
                    "loads as text.")
+        lenient_csv = st.toggle("Enable Lenient CSV (Pad short rows with NULL)",
+                                value=False, key=P + "lenient_csv")
+        st.caption("Lenient CSV applies to **CSV** files only: rows with "
+                   "fewer columns than the header are padded with NULL "
+                   "instead of erroring. This is the fix for 'Expected "
+                   "Number of Columns' errors, which Safe Mode cannot fix "
+                   "(Safe Mode only bypasses type inference — it does not "
+                   "change row-shape checks). Rows with *more* columns than "
+                   "the header still error.")
         sources: list = []
         if src_mode == "Upload File":
             ups = st.file_uploader("Data files (.parquet / .csv / .xlsx)",
@@ -378,9 +394,11 @@ with tab_sql:
                         f"Sheet for {label}", sheets,
                         key=P + f"sheet_{src['key'][0]}_{label}")
                     tnames.append(_ingest_src(src, sheet=sheet,
-                                              safe_mode=safe_mode))
+                                              safe_mode=safe_mode,
+                                              lenient_csv=lenient_csv))
                 else:
-                    tnames.append(_ingest_src(src, safe_mode=safe_mode))
+                    tnames.append(_ingest_src(src, safe_mode=safe_mode,
+                                              lenient_csv=lenient_csv))
             except ValueError as e:
                 st.error(f"⚠️ {label}: {e}")
 
@@ -392,43 +410,54 @@ with tab_sql:
                 st.subheader("📋 Instant profiler")
                 st.caption("Runs inside DuckDB — large files are never "
                            "loaded into Python memory.")
+                # Profile once per table: the aggregation below scans the
+                # full dataset (COUNT DISTINCT per column), so it must
+                # NOT re-run on every Streamlit rerun. Failures are cached
+                # too — a broken file must not be re-scanned to its
+                # failure line on every interaction; the entry is evicted
+                # when the view is re-created (Safe / Lenient toggle flip)
+                # or tables are cleared. (Same staleness contract as
+                # successful profiles: a file edited on disk needs
+                # "Clear all tables" to re-read.)
+                prof_cache = st.session_state.setdefault(P + "prof_cache", {})
                 for tname in tnames:
+                    if tname not in prof_cache:
+                        try:
+                            with st.spinner(f"Profiling `{tname}`…"):
+                                prof_cache[tname] = core.profile_duckdb(
+                                    _con(), tname)
+                        except duckdb.Error:
+                            prof_cache[tname] = {"error": traceback.format_exc()}
+                        except Exception as e:
+                            st.error(f"⚠️ Could not profile `{tname}`: {e}")
+                            continue
+                    prof = prof_cache[tname]
+                    if prof.get("error"):
+                        tb = prof["error"]
+                        if "Number of Columns" in tb:
+                            # Structural error, not a type error: Safe Mode
+                            # (all_varchar) cannot fix a short row.
+                            st.error(
+                                f"⚠️ `{tname}`: a row has fewer columns than "
+                                "the header — a structural CSV error, not a "
+                                "type error, so Safe Mode cannot fix it. "
+                                "Enable **Lenient CSV (Pad short rows with "
+                                "NULL)** above to pad short rows, or fix "
+                                "the source row at the line shown below.")
+                        else:
+                            st.error(
+                                f"⚠️ `{tname}`: DuckDB hit a data type "
+                                "conversion error while scanning this "
+                                "CSV in strict mode. Cleanse the source "
+                                "file at the line shown below, or "
+                                "enable **Safe Mode (Read all as "
+                                "String)** above to force-load the "
+                                "file as text.")
+                        with st.expander(
+                                "View Error Details & Line Number"):
+                            st.code(tb, language="text")
+                        continue
                     with st.expander(f"`{tname}`"):
-                        # Profile once per table: the aggregation below scans
-                        # the full dataset (COUNT DISTINCT per column), so it
-                        # must NOT re-run on every Streamlit rerun — expander
-                        # bodies are not lazy.
-                        prof_cache = st.session_state.setdefault(
-                            P + "prof_cache", {})
-                        if tname not in prof_cache:
-                            try:
-                                with st.spinner(f"Profiling `{tname}`…"):
-                                    prof_cache[tname] = core.profile_duckdb(
-                                        _con(), tname)
-                            except duckdb.Error:
-                                # Strict type inference hit dirty data
-                                # (e.g. a string deep inside a BIGINT
-                                # column). Never crash: keep the raw
-                                # traceback visible — it names the exact
-                                # file line to cleanse — and point to the
-                                # Safe Mode bypass.
-                                st.error(
-                                    f"⚠️ `{tname}`: DuckDB hit a data type "
-                                    "conversion error while scanning this "
-                                    "CSV in strict mode. Cleanse the source "
-                                    "file at the line shown below, or "
-                                    "enable **Safe Mode (Read all as "
-                                    "String)** above to force-load the "
-                                    "file as text.")
-                                with st.expander(
-                                        "View Error Details & Line Number"):
-                                    st.code(traceback.format_exc(),
-                                            language="text")
-                                continue
-                            except Exception as e:
-                                st.error(f"⚠️ Could not profile `{tname}`: {e}")
-                                continue
-                        prof = prof_cache[tname]
                         st.markdown(f"{prof['rows']:,} rows × {prof['cols']} cols")
                         st.dataframe(core.profile_frame(prof),
                                      use_container_width=True, hide_index=True)

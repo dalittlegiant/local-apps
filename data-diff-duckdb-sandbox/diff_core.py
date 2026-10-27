@@ -75,7 +75,8 @@ def write_upload_to_temp(name: str, raw: bytes) -> str:
     return path
 
 
-def duckdb_source_clause(path: str, name: str, all_varchar: bool = False) -> str:
+def duckdb_source_clause(path: str, name: str, all_varchar: bool = False,
+                         null_padding: bool = False) -> str:
     """A FROM-clause fragment letting DuckDB scan the staged file directly.
 
     No pandas round-trip: DuckDB reads parquet/csv natively, so a 300MB
@@ -86,14 +87,28 @@ def duckdb_source_clause(path: str, name: str, all_varchar: bool = False) -> str
     type inference is bypassed and a file whose deep rows violate the
     sniffed types (e.g. a string in a BIGINT column) still loads. The
     trade-off is that all values arrive as text.
+
+    ``null_padding=True`` (CSV only) adds ``null_padding=true`` — Lenient
+    CSV: rows with FEWER columns than the header are padded with NULL
+    instead of erroring ("Expected Number of Columns ... Found: ...").
+    This fixes source rows that omit trailing empty columns. It does NOT
+    bypass type inference (combine with ``all_varchar`` for that) and does
+    NOT accept rows with MORE columns than the header. ``ignore_errors``
+    would instead drop bad rows entirely — data loss, so it is not
+    offered as a toggle.
     """
     q = path.replace("'", "''")
     lname = name.lower()
     if lname.endswith(".parquet"):
         return f"read_parquet('{q}')"
     if lname.endswith(".csv"):
+        opts = []
         if all_varchar:
-            return f"read_csv_auto('{q}', all_varchar=true)"
+            opts.append("all_varchar=true")
+        if null_padding:
+            opts.append("null_padding=true")
+        if opts:
+            return f"read_csv_auto('{q}', {', '.join(opts)})"
         return f"read_csv_auto('{q}')"
     raise ValueError(f"DuckDB cannot scan {name} directly (use .parquet/.csv).")
 

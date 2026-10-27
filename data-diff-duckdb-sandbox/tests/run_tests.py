@@ -180,6 +180,44 @@ check("dirty csv bad value preserved",
       == "91021100/112")
 os.unlink(dirty_path)
 
+# --- Lenient CSV: short rows (fewer columns than the header) ----------
+# The bad row must sit PAST the sniffer's ~20,480-row sample: inside the
+# sample, dialect detection itself fails and the file loads as a single
+# VARCHAR column instead of erroring.
+check("source clause csv lenient",
+      core.duckdb_source_clause("/tmp/x.csv", "x.csv", null_padding=True)
+      == "read_csv_auto('/tmp/x.csv', null_padding=true)")
+check("source clause csv safe + lenient",
+      core.duckdb_source_clause("/tmp/x.csv", "x.csv", all_varchar=True,
+                                null_padding=True)
+      == "read_csv_auto('/tmp/x.csv', all_varchar=true, null_padding=true)")
+short_rows = (["a,b,c,d,e"]
+              + [f"{i},2,3,4,5" for i in range(21000)]
+              + ["6,7,8"]
+              + [f"{i},2,3,4,5" for i in range(21001, 21100)])
+short_path = core.write_upload_to_temp(
+    "short.csv", ("\n".join(short_rows) + "\n").encode())
+con_short = duckdb.connect()
+con_short.execute('CREATE OR REPLACE VIEW s_strict AS SELECT * FROM '
+                  + core.duckdb_source_clause(short_path, "short.csv"))
+try:
+    core.profile_duckdb(con_short, "s_strict")
+    check("short row strict mode raises", False)
+except duckdb.Error as e:
+    check("short row strict mode raises",
+          "Number of Columns" in str(e) and "Found: 3" in str(e),
+          str(e).splitlines()[2][:80] if len(str(e).splitlines()) > 2 else "")
+con_short.execute('CREATE OR REPLACE VIEW s_len AS SELECT * FROM '
+                  + core.duckdb_source_clause(short_path, "short.csv",
+                                              null_padding=True))
+prof_short = core.profile_duckdb(con_short, "s_len")
+check("short row lenient loads", prof_short["rows"] == 21100)
+check("short row padded with null",
+      con_short.execute(
+          "SELECT c, d, e FROM s_len WHERE a = 6 AND b = 7").fetchone()
+      == (8, None, None))
+os.unlink(short_path)
+
 # --- export encoding: utf-8-sig (BOM) for Excel -------------------------
 plain = "備註,地區\n中文測試,香港\n".encode("utf-8")
 bombed = core.with_utf8_bom(plain)

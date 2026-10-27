@@ -22,7 +22,7 @@ freezing — 100% local. Two tools (one tab each):
 data-diff-duckdb-sandbox/
 ├── app.py                  # Streamlit UI only
 ├── diff_core.py            # pure logic — no st.*
-├── tests/run_tests.py      # 44 checks, no Streamlit needed
+├── tests/run_tests.py      # 49 checks, no Streamlit needed
 ├── .streamlit/config.toml  # maxUploadSize=1000 (also at repo root + launcher dir)
 └── requirements.txt        # + duckdb, pyarrow
 ```
@@ -40,10 +40,11 @@ suite launcher, which owns page config).
 - `write_upload_to_temp(name, raw)` — stages bytes in the OS temp dir
   (outside the repo; never committable). Returns the path; caller deletes
   it on table drop.
-- `duckdb_source_clause(path, name, all_varchar=False)` — `read_parquet(...)` /
+- `duckdb_source_clause(path, name, all_varchar=False, null_padding=False)` — `read_parquet(...)` /
   `read_csv_auto(...)` FROM-fragment so DuckDB scans the staged file
   natively. `all_varchar=True` (CSV only) appends `all_varchar=true` —
-  Safe Mode, see below.
+  Safe Mode, see below. `null_padding=True` (CSV only) appends
+  `null_padding=true` — Lenient CSV, see below.
 - `excel_sheets(raw)` — workbook sheet names for the per-file selector.
 - `sanitize_table_name(name)` — safe DuckDB identifiers (`t_` prefix for
   leading digits).
@@ -93,6 +94,22 @@ suite launcher, which owns page config).
   "View Error Details & Line Number" expander — it never crashes.
   CSV-only by design: parquet keeps native types, xlsx and the whole
   Diff tab already load through pandas as text.
+- **Lenient CSV** (`st.toggle` "Enable Lenient CSV (Pad short rows with
+  NULL)", SQL tab, default OFF): CSV views are created over
+  `read_csv_auto(..., null_padding=true)`, so rows with FEWER columns
+  than the header are padded with NULL instead of raising
+  "Expected Number of Columns ... Found: ...". This is a DIFFERENT
+  failure class from Safe Mode: Safe Mode bypasses type inference only
+  and cannot fix a short row. Rows with MORE columns than the header
+  still error; `ignore_errors` (which would drop bad rows) is
+  deliberately not offered. Registry entries carry both `"safe"` and
+  `"lenient"` flags; flipping either re-creates the view under the same
+  table name. The profiler's error card branches on the traceback:
+  column-count errors point at Lenient CSV, conversion errors at Safe
+  Mode. Sniffer nuance: a bad row INSIDE the ~20,480-row sniff sample
+  breaks dialect detection itself (file loads as a single VARCHAR
+  column) instead of erroring — only bad rows past the sample produce
+  the clean column-count error.
 - **Connection** (`_con()`): single persistent in-memory DuckDB connection
   via `@st.cache_resource` — views and file metadata stay hot between
   queries. Single-user local app: no cross-thread sharing.
@@ -111,6 +128,12 @@ suite launcher, which owns page config).
   each table is profiled **once** — expander bodies execute on every
   Streamlit rerun, and re-profiling every table on every Run click was
   the dominant latency source. Cleared by "Clear all tables".
+  **Failures are cached too** (`{"error": traceback}`): a broken file
+  must not be re-scanned to its failure line on every interaction.
+  The entry is evicted when the view is re-created (Safe / Lenient
+  toggle flip) or tables are cleared — same staleness contract as
+  successful profiles (a file edited on disk needs "Clear all tables"
+  to re-read).
 - The DuckDB connection lives in session state (in-memory, per browser
   session).
 - **Query isolation**: the SQL editor + Run button live in an `st.form`, so
@@ -131,6 +154,9 @@ error paths, temp-file staging (round-trip, outside-repo, suffix),
 dirty-CSV end-to-end (30k numeric rows + a string in the BIGINT column:
 strict-mode `profile_duckdb` raises `duckdb.Error` naming line 30002,
 `all_varchar` loads all rows as VARCHAR with the bad value preserved),
+short-row CSV end-to-end (bad row past the 20,480-row sniff sample:
+strict-mode `profile_duckdb` raises "Expected Number of Columns ...
+Found: 3", `null_padding` loads all rows with trailing columns NULL),
 export encoding (BOM added, idempotent, Chinese payload round-trips;
 DuckDB COPY output verified BOM-less then fixed), end-to-end native scan
 of a staged CSV, `profile_duckdb` rows/nulls/uniques + frame rendering,
