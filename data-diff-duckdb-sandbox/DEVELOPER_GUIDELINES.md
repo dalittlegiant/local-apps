@@ -22,7 +22,7 @@ freezing — 100% local. Two tools (one tab each):
 data-diff-duckdb-sandbox/
 ├── app.py                  # Streamlit UI only
 ├── diff_core.py            # pure logic — no st.*
-├── tests/run_tests.py      # 52 checks, no Streamlit needed
+├── tests/run_tests.py      # 57 checks, no Streamlit needed
 ├── .streamlit/config.toml  # maxUploadSize=1000 (also at repo root + launcher dir)
 └── requirements.txt        # + duckdb, pyarrow
 ```
@@ -42,11 +42,13 @@ suite launcher, which owns page config).
 - `write_upload_to_temp(name, raw)` — stages bytes in the OS temp dir
   (outside the repo; never committable). Returns the path; caller deletes
   it on table drop.
-- `duckdb_source_clause(path, name, all_varchar=False, null_padding=False)` — `read_parquet(...)` /
+- `duckdb_source_clause(path, name, all_varchar=False, null_padding=False, skip_rows=None)` — `read_parquet(...)` /
   `read_csv_auto(...)` FROM-fragment so DuckDB scans the staged file
   natively. `all_varchar=True` (CSV only) appends `all_varchar=true` —
   Safe Mode, see below. `null_padding=True` (CSV only) appends
-  `null_padding=true` — Lenient CSV, see below.
+  `null_padding=true` — Lenient CSV, see below. `skip_rows=N` (CSV
+  only) appends `skip=N`, overriding the sniffer's auto-detected
+  preamble skip; `None` leaves auto-detection on.
 - `excel_sheets(raw)` — workbook sheet names for the per-file selector.
 - `sanitize_table_name(name)` — safe DuckDB identifiers (`t_` prefix for
   leading digits).
@@ -112,6 +114,18 @@ suite launcher, which owns page config).
   breaks dialect detection itself (file loads as a single VARCHAR
   column) instead of erroring — only bad rows past the sample produce
   the clean column-count error.
+- **SQL-tab header skip** (`st.toggle` "Auto-detect skipped rows
+  (DuckDB)", default ON, + "Rows to skip before the header (CSV)"
+  number input): the toggle OFF passes an explicit `skip=N` to
+  `read_csv_auto`, overriding auto-detection for report formats whose
+  preamble DuckDB misreads (e.g. a title row that looks like a header).
+  `skip=0` genuinely means "skip nothing" — it is not auto-detect, so
+  the toggle exists to tell the two apart. Registry entries carry
+  `"skip_rows"` alongside `"safe"`/`"lenient"`; flipping any of the
+  three re-creates the view under the same table name. Naming trap:
+  DuckDB's SQL parameter is `skip`, pandas' is `skiprows` — the Diff
+  tab's input uses the pandas spelling, the SQL tab's the DuckDB one,
+  and the two tabs keep separate widget keys/state on purpose.
 - **Connection** (`_con()`): single persistent in-memory DuckDB connection
   via `@st.cache_resource` — views and file metadata stay hot between
   queries. Single-user local app: no cross-thread sharing.
@@ -167,6 +181,8 @@ strict-mode `profile_duckdb` raises "Expected Number of Columns ...
 Found: 3", `null_padding` loads all rows with trailing columns NULL),
 skiprows (preamble CSV raises "Expected 1 fields" without it, loads
 with the true header at skiprows=2; Excel title row at skiprows=1),
+SQL-tab skip (auto-detection picks a title row as header; explicit
+skip=1 recovers the real header; skip=0 means skip nothing),
 export encoding (BOM added, idempotent, Chinese payload round-trips;
 DuckDB COPY output verified BOM-less then fixed), end-to-end native scan
 of a staged CSV, `profile_duckdb` rows/nulls/uniques + frame rendering,

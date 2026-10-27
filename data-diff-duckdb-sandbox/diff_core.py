@@ -87,7 +87,8 @@ def write_upload_to_temp(name: str, raw: bytes) -> str:
 
 
 def duckdb_source_clause(path: str, name: str, all_varchar: bool = False,
-                         null_padding: bool = False) -> str:
+                         null_padding: bool = False,
+                         skip_rows: int | None = None) -> str:
     """A FROM-clause fragment letting DuckDB scan the staged file directly.
 
     No pandas round-trip: DuckDB reads parquet/csv natively, so a 300MB
@@ -107,6 +108,14 @@ def duckdb_source_clause(path: str, name: str, all_varchar: bool = False,
     NOT accept rows with MORE columns than the header. ``ignore_errors``
     would instead drop bad rows entirely — data loss, so it is not
     offered as a toggle.
+
+    ``skip_rows`` (CSV only) adds ``skip=N`` — an explicit preamble skip
+    that OVERRIDES the sniffer's auto-detection. ``None`` (default)
+    leaves auto-detection on (it found 3 for a Daily Refresh export
+    whose header sits on line 4). Note the SQL parameter is ``skip``,
+    not ``skiprows`` (that spelling is pandas' — the Diff tab's input
+    uses it). ``skip=0`` is a real value meaning "skip nothing"; it is
+    NOT the same as auto-detect.
     """
     q = path.replace("'", "''")
     lname = name.lower()
@@ -118,6 +127,8 @@ def duckdb_source_clause(path: str, name: str, all_varchar: bool = False,
             opts.append("all_varchar=true")
         if null_padding:
             opts.append("null_padding=true")
+        if skip_rows is not None:
+            opts.append(f"skip={int(skip_rows)}")
         if opts:
             return f"read_csv_auto('{q}', {', '.join(opts)})"
         return f"read_csv_auto('{q}')"

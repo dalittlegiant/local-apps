@@ -121,7 +121,7 @@ def _norm_source(kind: str, raw) -> dict:
 
 
 def _ingest_src(src: dict, sheet=None, safe_mode: bool = False,
-                lenient_csv: bool = False) -> str:
+                lenient_csv: bool = False, skip_rows: int | None = None) -> str:
     """Stage + register a source exactly once.
 
     Uploads: parquet/csv staged to the OS temp dir and scanned natively by
@@ -133,8 +133,11 @@ def _ingest_src(src: dict, sheet=None, safe_mode: bool = False,
     violate the sniffed types still loads — every column as VARCHAR.
     ``lenient_csv`` (CSV only) adds ``null_padding=true`` so rows with
     fewer columns than the header are padded with NULL instead of
-    erroring. Flipping either re-creates the view under the same table
-    name. Returns the table name. Never re-parses on Streamlit reruns.
+    erroring. ``skip_rows`` (CSV only) adds ``skip=N``, overriding the
+    sniffer's auto-detected preamble skip; ``None`` leaves auto-detection
+    on. Flipping any of the three re-creates the view under the same
+    table name. Returns the table name. Never re-parses on Streamlit
+    reruns.
     """
     key = src["key"] + (sheet,)
     reg = _registry()
@@ -152,10 +155,12 @@ def _ingest_src(src: dict, sheet=None, safe_mode: bool = False,
         raw, staged = None, False
     want_safe = bool(safe_mode) and lname.endswith(".csv")
     want_lenient = bool(lenient_csv) and lname.endswith(".csv")
+    want_skip = skip_rows if lname.endswith(".csv") else None
     existing = reg.get(key)
     if (existing is not None
             and existing.get("safe", False) == want_safe
-            and existing.get("lenient", False) == want_lenient):
+            and existing.get("lenient", False) == want_lenient
+            and existing.get("skip_rows") == want_skip):
         return existing["tname"]
     if lname.endswith((".xlsx", ".xls")):
         data = raw if raw is not None else Path(src["path"]).read_bytes()
@@ -171,7 +176,7 @@ def _ingest_src(src: dict, sheet=None, safe_mode: bool = False,
             except Exception:
                 pass
         reg[key] = {"tname": tname, "kind": "table", "path": None,
-                    "safe": False, "lenient": False}
+                    "safe": False, "lenient": False, "skip_rows": None}
     elif lname.endswith((".parquet", ".csv")):
         if staged:
             # Only the Safe Mode flag flipped → reuse the staged temp file
@@ -183,10 +188,12 @@ def _ingest_src(src: dict, sheet=None, safe_mode: bool = False,
             fpath, cleanup = str(Path(src["path"])), None  # DuckDB reads in place
         tname = existing["tname"] if existing else _unique_tname(base)
         clause = core.duckdb_source_clause(fpath, disp, all_varchar=want_safe,
-                                           null_padding=want_lenient)
+                                           null_padding=want_lenient,
+                                           skip_rows=want_skip)
         con.execute(f'CREATE OR REPLACE VIEW "{tname}" AS SELECT * FROM {clause}')
         reg[key] = {"tname": tname, "kind": "view", "path": cleanup,
-                    "safe": want_safe, "lenient": want_lenient}
+                    "safe": want_safe, "lenient": want_lenient,
+                    "skip_rows": want_skip}
         # The (re)created view may have a different shape — drop any
         # profile cached against the old definition.
         prof_cache = st.session_state.get(P + "prof_cache")
@@ -365,6 +372,19 @@ with tab_sql:
                    "(Safe Mode only bypasses type inference — it does not "
                    "change row-shape checks). Rows with *more* columns than "
                    "the header still error.")
+        skip_auto = st.toggle("Auto-detect skipped rows (DuckDB)",
+                              value=True, key=P + "sql_skip_auto")
+        skip_rows_val = st.number_input("Rows to skip before the header (CSV)",
+                                        min_value=0, value=0, step=1,
+                                        disabled=skip_auto,
+                                        key=P + "sql_skiprows")
+        st.caption("DuckDB auto-detects preamble rows itself — it found 3 "
+                   "for a Daily Refresh export whose header sits on line 4. "
+                   "Turn auto-detect OFF to force an exact count for other "
+                   "report formats (0, 3, 5, …). CSV only. Note 0 genuinely "
+                   "means 'skip nothing' — it is not the same as "
+                   "auto-detect.")
+        skip_rows = None if skip_auto else int(skip_rows_val)
         sources: list = []
         if src_mode == "Upload File":
             ups = st.file_uploader("Data files (.parquet / .csv / .xlsx)",
@@ -400,10 +420,12 @@ with tab_sql:
                         key=P + f"sheet_{src['key'][0]}_{label}")
                     tnames.append(_ingest_src(src, sheet=sheet,
                                               safe_mode=safe_mode,
-                                              lenient_csv=lenient_csv))
+                                              lenient_csv=lenient_csv,
+                                              skip_rows=skip_rows))
                 else:
                     tnames.append(_ingest_src(src, safe_mode=safe_mode,
-                                              lenient_csv=lenient_csv))
+                                              lenient_csv=lenient_csv,
+                                              skip_rows=skip_rows))
             except ValueError as e:
                 st.error(f"⚠️ {label}: {e}")
 

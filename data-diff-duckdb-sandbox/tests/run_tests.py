@@ -242,6 +242,43 @@ df_x = core.load_upload("rep.xlsx", xbuf.getvalue(), skiprows=1)
 check("skiprows excel header",
       list(df_x.columns) == ["id", "name"] and len(df_x) == 1)
 
+# --- SQL-tab skip: explicit DuckDB skip=N overrides auto-detection -----
+# The title row looks like a header (3 fields), so auto-detection picks
+# it; only an explicit skip=1 recovers the real header.
+tricky_csv = b"Report,2025,Final\nid,name,amt\n1,Amy,10\n2,Bob,20\n"
+tricky_path = core.write_upload_to_temp("tricky.csv", tricky_csv)
+con_tricky = duckdb.connect()
+con_tricky.execute('CREATE OR REPLACE VIEW tk_auto AS SELECT * FROM '
+                   + core.duckdb_source_clause(tricky_path, "tricky.csv"))
+check("skip auto picks title row as header",
+      [r[0] for r in con_tricky.execute(
+          "DESCRIBE SELECT * FROM tk_auto").fetchall()]
+      == ["Report", "2025", "Final"])
+check("source clause csv skip",
+      core.duckdb_source_clause("/tmp/x.csv", "x.csv", skip_rows=3)
+      == "read_csv_auto('/tmp/x.csv', skip=3)")
+check("source clause csv all options",
+      core.duckdb_source_clause("/tmp/x.csv", "x.csv", all_varchar=True,
+                                null_padding=True, skip_rows=3)
+      == "read_csv_auto('/tmp/x.csv', all_varchar=true, null_padding=true, skip=3)")
+con_tricky.execute('CREATE OR REPLACE VIEW tk_skip AS SELECT * FROM '
+                   + core.duckdb_source_clause(tricky_path, "tricky.csv",
+                                               skip_rows=1))
+check("skip=1 recovers real header",
+      [r[0] for r in con_tricky.execute(
+          "DESCRIBE SELECT * FROM tk_skip").fetchall()]
+      == ["id", "name", "amt"]
+      and con_tricky.execute("SELECT * FROM tk_skip").fetchall()
+      == [(1, "Amy", 10), (2, "Bob", 20)])
+con_tricky.execute('CREATE OR REPLACE VIEW tk_zero AS SELECT * FROM '
+                   + core.duckdb_source_clause(tricky_path, "tricky.csv",
+                                               skip_rows=0))
+check("skip=0 means skip nothing, not auto",
+      [r[0] for r in con_tricky.execute(
+          "DESCRIBE SELECT * FROM tk_zero").fetchall()]
+      == ["Report", "2025", "Final"])
+os.unlink(tricky_path)
+
 # --- export encoding: utf-8-sig (BOM) for Excel -------------------------
 plain = "備註,地區\n中文測試,香港\n".encode("utf-8")
 bombed = core.with_utf8_bom(plain)
