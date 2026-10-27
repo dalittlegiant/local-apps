@@ -22,7 +22,7 @@ freezing — 100% local. Two tools (one tab each):
 data-diff-duckdb-sandbox/
 ├── app.py                  # Streamlit UI only
 ├── diff_core.py            # pure logic — no st.*
-├── tests/run_tests.py      # 49 checks, no Streamlit needed
+├── tests/run_tests.py      # 52 checks, no Streamlit needed
 ├── .streamlit/config.toml  # maxUploadSize=1000 (also at repo root + launcher dir)
 └── requirements.txt        # + duckdb, pyarrow
 ```
@@ -33,10 +33,12 @@ suite launcher, which owns page config).
 
 ## Functions & methodology (`diff_core.py`, all pure)
 
-- `load_upload(name, raw, sheet)` — parquet via pyarrow, CSV with
+- `load_upload(name, raw, sheet, skiprows=0)` — parquet via pyarrow, CSV with
   `utf-8-sig → utf-8 → cp1252 → latin-1`, Excel via openpyxl as `object`
   dtype. Raises `ValueError` (never crashes) on bad input. Used for xlsx
   ingestion and the diff tab only — parquet/csv never touch pandas.
+  `skiprows` skips that many physical lines before the header (report
+  exports with title/preamble lines); ignored for parquet.
 - `write_upload_to_temp(name, raw)` — stages bytes in the OS temp dir
   (outside the repo; never committable). Returns the path; caller deletes
   it on table drop.
@@ -143,7 +145,13 @@ suite launcher, which owns page config).
   `COPY (sql) TO ...` (CSV/Parquet) on explicit click — no pandas.
 - Diff previews show the first 500–1000 rows; full results go through the
   CSV/Excel/Parquet download buttons. Diff-tab DataFrames are cached in
-  session state keyed by `(tag, filename, size)`.
+  session state keyed by `(tag, skiprows, filename, size)` — changing the
+  skip count re-parses. The Diff tab's "Rows to skip before the header"
+  number input (default 0, shared by old + new) handles report-style
+  files whose preamble title lines would otherwise make pandas infer 1
+  column and fail with "Expected 1 fields in line …, saw N". The SQL
+  tab needs no such input: DuckDB's `read_csv_auto` auto-detects
+  `skip_rows` itself.
 
 ## Testing
 
@@ -157,6 +165,8 @@ strict-mode `profile_duckdb` raises `duckdb.Error` naming line 30002,
 short-row CSV end-to-end (bad row past the 20,480-row sniff sample:
 strict-mode `profile_duckdb` raises "Expected Number of Columns ...
 Found: 3", `null_padding` loads all rows with trailing columns NULL),
+skiprows (preamble CSV raises "Expected 1 fields" without it, loads
+with the true header at skiprows=2; Excel title row at skiprows=1),
 export encoding (BOM added, idempotent, Chinese payload round-trips;
 DuckDB COPY output verified BOM-less then fixed), end-to-end native scan
 of a staged CSV, `profile_duckdb` rows/nulls/uniques + frame rendering,

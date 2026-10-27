@@ -18,21 +18,32 @@ MAX_CHANGED_CELLS = 10_000
 
 
 # ------------------------------------------------------------ loading
-def load_upload(name: str, raw: bytes, sheet: str | int = 0) -> pd.DataFrame:
-    """Read an uploaded file into a DataFrame. Raises ValueError on failure."""
+def load_upload(name: str, raw: bytes, sheet: str | int = 0,
+                skiprows: int = 0) -> pd.DataFrame:
+    """Read an uploaded file into a DataFrame. Raises ValueError on failure.
+
+    ``skiprows`` skips that many physical lines at the start of the file
+    before the header row — for report-style CSV/Excel exports with
+    title/preamble lines above the real header (e.g. skiprows=3 when the
+    header sits on line 4). Parquet has no header rows, so it is ignored
+    there. ``skiprows`` counts physical lines, blank lines included.
+    """
     lname = name.lower()
     try:
         if lname.endswith(".parquet"):
             return pd.read_parquet(io.BytesIO(raw))
         if lname.endswith((".xlsx", ".xls")):
-            return pd.read_excel(io.BytesIO(raw), sheet_name=sheet, dtype=object)
+            return pd.read_excel(io.BytesIO(raw), sheet_name=sheet,
+                                 dtype=object, skiprows=skiprows)
         if lname.endswith(".csv"):
             for enc in ("utf-8-sig", "utf-8", "cp1252"):
                 try:
-                    return pd.read_csv(io.BytesIO(raw), dtype=str, encoding=enc)
+                    return pd.read_csv(io.BytesIO(raw), dtype=str,
+                                       encoding=enc, skiprows=skiprows)
                 except (UnicodeDecodeError, UnicodeError):
                     continue
-            return pd.read_csv(io.BytesIO(raw), dtype=str, encoding="latin-1")
+            return pd.read_csv(io.BytesIO(raw), dtype=str,
+                               encoding="latin-1", skiprows=skiprows)
     except ValueError:
         raise
     except Exception as exc:

@@ -217,17 +217,22 @@ def _drop_all():
         st.session_state.pop(k, None)
 
 
-def _diff_df_src(src: dict, tag):
-    """Diff-tab DataFrames, parsed once per source."""
-    key = (P + "diffdf", tag) + src["key"]
+def _diff_df_src(src: dict, tag, skiprows: int = 0):
+    """Diff-tab DataFrames, parsed once per source.
+
+    The cache key includes ``skiprows`` so changing the skip count
+    re-parses instead of returning the previously parsed frame.
+    """
+    key = (P + "diffdf", tag, skiprows) + src["key"]
     if key not in st.session_state:
         if src["kind"] == "upload":
-            df = core.load_upload(src["up"].name, src["up"].getvalue())
+            df = core.load_upload(src["up"].name, src["up"].getvalue(),
+                                  skiprows=skiprows)
         else:
             p = Path(src["path"])
             if not p.is_file():
                 raise ValueError(f"File not found: {src['path']}")
-            df = core.load_upload(p.name, p.read_bytes())
+            df = core.load_upload(p.name, p.read_bytes(), skiprows=skiprows)
         st.session_state[key] = df
     return st.session_state[key]
 
@@ -563,6 +568,17 @@ with tab_diff:
     with st.container(border=True):
         dsrc_mode = st.radio("Input method", ("Upload File", "Read from Local Path"),
                              horizontal=True, key=P + "dsrcmode")
+        skiprows = st.number_input("Rows to skip before the header",
+                                   min_value=0, value=0, step=1,
+                                   key=P + "skiprows")
+        st.caption("For report-style files with title/preamble lines above "
+                   "the real header: set this to the number of lines to "
+                   "skip (e.g. 3 when the header sits on line 4) so the "
+                   "header becomes row 1. Applies to both files (old and "
+                   "new are snapshots of the same report). CSV and Excel "
+                   "only — Parquet has no header rows. If you see "
+                   "'Expected 1 fields in line …, saw 96', raise this "
+                   "number until the column names look right.")
         c1, c2 = st.columns(2)
         old_src = new_src = None
         if dsrc_mode == "Upload File":
@@ -594,8 +610,8 @@ with tab_diff:
 
     if old_src and new_src:
         try:
-            old = _diff_df_src(old_src, "old")
-            new = _diff_df_src(new_src, "new")
+            old = _diff_df_src(old_src, "old", skiprows=skiprows)
+            new = _diff_df_src(new_src, "new", skiprows=skiprows)
         except ValueError as e:
             st.error(f"⚠️ {e}")
             st.stop()

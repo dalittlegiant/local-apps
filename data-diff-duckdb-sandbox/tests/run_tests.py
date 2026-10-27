@@ -218,6 +218,30 @@ check("short row padded with null",
       == (8, None, None))
 os.unlink(short_path)
 
+# --- Diff-tab skiprows: report-style files with preamble lines --------
+# Reproduces the Diff-tab screenshot error: single-field title lines make
+# pandas infer 1 column, then the real header errors out.
+preamble_csv = (b"Daily Refresh Report\nGenerated 2025-05-23\n"
+                b"id,name,amt\n1,Amy,10\n2,Bob,20\n")
+try:
+    core.load_upload("rep.csv", preamble_csv)
+    check("preamble csv without skiprows raises", False)
+except ValueError as e:
+    check("preamble csv without skiprows raises",
+          "Expected 1 fields" in str(e), str(e)[:80])
+df_skip = core.load_upload("rep.csv", preamble_csv, skiprows=2)
+check("skiprows csv header",
+      list(df_skip.columns) == ["id", "name", "amt"] and len(df_skip) == 2
+      and df_skip.iloc[0]["name"] == "Amy")
+# Excel with a title row on top (same shape, different parser).
+xbuf = io.BytesIO()
+with pd.ExcelWriter(xbuf, engine="openpyxl") as w:
+    pd.DataFrame({"id": [1], "name": ["Amy"]}).to_excel(
+        w, index=False, startrow=1)
+df_x = core.load_upload("rep.xlsx", xbuf.getvalue(), skiprows=1)
+check("skiprows excel header",
+      list(df_x.columns) == ["id", "name"] and len(df_x) == 1)
+
 # --- export encoding: utf-8-sig (BOM) for Excel -------------------------
 plain = "備註,地區\n中文測試,香港\n".encode("utf-8")
 bombed = core.with_utf8_bom(plain)
