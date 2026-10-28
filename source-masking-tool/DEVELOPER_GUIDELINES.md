@@ -1,4 +1,4 @@
-# Power Apps ALM & Masking Tool — Developer Guidelines
+# Source Masking Tool — Developer Guidelines (generalised)
 
 > Shared repo conventions (testing, encoding, git/PAT, security) live in
 > [`../DEVELOPER_GUIDE.md`](../DEVELOPER_GUIDE.md). This file is only about
@@ -7,19 +7,38 @@
 ## Layout
 
 ```
-power-apps-alm-masking/
+source-masking-tool/
 ├── app.py                 # Streamlit UI only (4 steps + pac check)
-├── pac_core.py            # pure logic, ZERO st.* imports (unit-testable)
+├── masking_core.py        # pure logic, ZERO st.* imports (unit-testable)
 ├── requirements.txt       # streamlit + pandas (stdlib otherwise)
 ├── tests/run_tests.py     # 33 checks, no Streamlit needed
 └── storage/               # gitignored: mapping_*.json + backups/
 ```
 
 Runs standalone (`streamlit run app.py`, guarded `set_page_config`) and as
-a launcher page (`../power-apps-alm-masking/app.py`, Governance & Security
+a launcher page (`../source-masking-tool/app.py`, Governance & Security
 pillar). The launcher owns page config in that mode.
 
-## Core design (pac_core.py)
+## Profiles (2026-10-28 generalisation)
+
+Project type is chosen in the UI before masking; every scan/mask/unmask/
+diff/leftover call passes that profile's suffixes through
+`masking_core.get_suffixes(profile)`:
+
+- `power-app` — `.pa.yaml`, `.json`; only profile that uses `pac`
+  Unpack/Pack. Default for backward compatibility in core calls.
+- `pbip` — `.tmdl`, `.json`, `.pbip`; no pac. Point the sources folder
+  at a COPY of the PBIP project folder (.pbip + .SemanticModel + .Report).
+  After unmasking, open it in Power BI Desktop to refresh/test/publish.
+- `generic` — `.txt`, `.md`, `.yaml`, `.yml`, `.json`, `.tmdl`,
+  `.pa.yaml`, `.xml`; no pac, use files directly after unmasking.
+- `custom` — suffixes typed in the UI (comma-separated); no pac.
+
+Do NOT switch profile after masking without re-masking: snapshot/diff/
+mapping must use the same suffix set, or files scanned under one profile
+will look added/removed under another. Snapshot records its suffixes.
+
+## Core design (masking_core.py)
 
 - **pac runner**: `run_pac()` uses list-form `subprocess.run` (no shell, so
   Windows paths with spaces need no quoting). `FileNotFoundError` → a
@@ -55,7 +74,7 @@ pillar). The launcher owns page config in that mode.
 
 ## UI conventions (app.py)
 
-- Session keys prefixed `pam_`. One shared sources-folder input at the top
+- Session keys prefixed `smk_`. One shared sources-folder input at the top
   feeds all four steps (no per-step retyping, no widget-state sync hacks).
 - Per-step status lines (`success` / `error` / `info`) live in session
   state and render at the top of each card; pac stdout/stderr go in

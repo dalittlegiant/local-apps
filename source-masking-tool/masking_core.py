@@ -1,11 +1,15 @@
 """Core logic for the Power Apps ALM & Masking Tool. Pure — no ``st.*`` calls.
 
 Workflow this supports (all local, nothing uploaded by this module):
-    1. Unpack a ``.msapp`` into source code with the Power Platform CLI (``pac``).
-    2. Mask sensitive strings (URLs, table names, ...) in the unpacked
-       ``.pa.yaml`` / ``.json`` sources, saving the mapping locally.
+    1. For a Power App: unpack a ``.msapp`` into source code with the
+       Power Platform CLI (``pac``). For a PBIP project or any other
+       text folder: point the tool at the folder directly (no unpack).
+    2. Mask sensitive strings (URLs, table names, ...) in the sources
+       for the selected project profile, saving the mapping locally.
     3. Upload the *masked* sources to GitHub for an AI agent to revise.
-    4. Download the revised sources, unmask, pack back into a ``.msapp``.
+    4. Download the revised sources, unmask, and finish per profile:
+       pack back into a ``.msapp`` (Power App) or open in
+       Power BI Desktop (PBIP) / use the files directly (generic).
 
 Security notes (read before touching the mapping file):
     * ``mapping_state.json`` maps masked values BACK to real values — it is
@@ -13,10 +17,11 @@ Security notes (read before touching the mapping file):
       directory (gitignored by the repo root ``.gitignore``: ``storage/``),
       NEVER inside the sources folder, and must never be committed or
       uploaded to GitHub. Uploading it defeats the masking entirely.
-    * Masking is plain-text replacement on ``.pa.yaml`` / ``.json`` files
-      only. It does not touch binaries, and it cannot find sensitive values
-      that are not in the mapping — always run the post-mask verification
-      report and eyeball the result before uploading.
+    * Masking is plain-text replacement on the selected profile's
+      text files only. It does not touch binaries, and it cannot find
+      sensitive values that are not in the mapping — always run the
+      post-mask verification report and eyeball the result before
+      uploading.
     * Replacements run longest-real-value-first so a short key (``Table``)
       can never eat part of a longer one (``TableName``).
 """
@@ -35,7 +40,86 @@ from pathlib import Path
 # ---------------------------------------------------------------- constants
 PAC_TIMEOUT = 600          # seconds for a single pac unpack/pack run
 PAC_VERSION_TIMEOUT = 30   # seconds for `pac --version`
+# Legacy default: the original Power App profile. New code should use
+# PROFILES / get_suffixes() so PBIP and generic folders are scanned too.
 SCAN_SUFFIXES = (".pa.yaml", ".json")
+POWER_APP_SUFFIXES = SCAN_SUFFIXES
+PBIP_SUFFIXES = (".tmdl", ".json", ".pbip")
+GENERIC_SUFFIXES = (".txt", ".md", ".yaml", ".yml", ".json", ".tmdl",
+                    ".pa.yaml", ".xml")
+PROFILES = {
+    "power-app": {
+        "label": "Power App (.msapp via pac)",
+        "suffixes": POWER_APP_SUFFIXES,
+        "uses_pac": True,
+        "finish": "pack",
+    },
+    "pbip": {
+        "label": "Power BI PBIP project (folder, no pac)",
+        "suffixes": PBIP_SUFFIXES,
+        "uses_pac": False,
+        "finish": "desktop",
+    },
+    "generic": {
+        "label": "Generic text folder",
+        "suffixes": GENERIC_SUFFIXES,
+        "uses_pac": False,
+        "finish": "direct",
+    },
+    "custom": {
+        "label": "Custom suffixes (typed in the UI)",
+        "suffixes": GENERIC_SUFFIXES,
+        "uses_pac": False,
+        "finish": "direct",
+    },
+}
+
+
+def parse_custom_suffixes(text):
+    """Parse a comma/space-separated suffix list into a tuple.
+
+    Each entry gets a leading dot if missing (``tmdl`` -> ``.tmdl``).
+    Raises PacError on an empty result.
+    """
+    parts = []
+    for raw in (text or "").replace(",", " ").split():
+        s = raw.strip().lower()
+        if not s:
+            continue
+        if not s.startswith("."):
+            s = "." + s
+        if s not in parts:
+            parts.append(s)
+    if not parts:
+        raise PacError("Custom suffixes are empty — type at least one "
+                       "suffix, e.g. .tmdl, .json")
+    return tuple(parts)
+
+
+def get_suffixes(profile, custom=None):
+    """Return the scan suffixes for a profile name.
+
+    ``custom`` is only used when profile == "custom" (a string or a
+    tuple/list of suffixes); otherwise the profile's built-in suffixes
+    are returned. Unknown profiles raise PacError.
+    """
+    if profile not in PROFILES:
+        raise PacError(f"Unknown project profile: {profile!r} "
+                       f"(expected one of {sorted(PROFILES)})")
+    if profile == "custom" and custom:
+        if isinstance(custom, str):
+            return parse_custom_suffixes(custom)
+        cleaned = []
+        for s in custom:
+            s = str(s).strip().lower()
+            if s and not s.startswith("."):
+                s = "." + s
+            if s and s not in cleaned:
+                cleaned.append(s)
+        if not cleaned:
+            raise PacError("Custom suffixes are empty.")
+        return tuple(cleaned)
+    return PROFILES[profile]["suffixes"]
 MAPPING_FILENAME = "mapping_state.json"
 MAPPING_STATE_EXCLUDE = "mapping_state.json"
 
@@ -155,17 +239,22 @@ def pack_msapp(sources_dir, msapp_path, timeout=PAC_TIMEOUT):
 
 
 # ---------------------------------------------------------------- scanning
-def scan_files(sources_dir):
-    """All ``.pa.yaml`` / ``.json`` files under ``sources_dir``, recursive.
+def scan_files(sources_dir, suffixes=None):
+    """All files matching ``suffixes`` under ``sources_dir``, recursive.
 
+    ``suffixes`` defaults to the Power App profile (``.pa.yaml`` /
+    ``.json``) for backward compatibility; pass
+    ``get_suffixes(profile)`` for PBIP / generic / custom projects.
     The mapping file itself is excluded by name, defensively, in case one
     ever lands inside a sources folder. Raises PacError for a bad folder.
     """
+    if suffixes is None:
+        suffixes = SCAN_SUFFIXES
     sources = Path(sources_dir)
     if not sources.is_dir():
         raise PacError(f"Sources folder not found: {sources_dir}")
     found = []
-    for suffix in SCAN_SUFFIXES:
+    for suffix in suffixes:
         found.extend(p for p in sources.rglob(f"*{suffix}")
                      if p.name != MAPPING_STATE_EXCLUDE and p.is_file())
     return sorted(found, key=lambda p: str(p.relative_to(sources)))
@@ -200,7 +289,7 @@ def _sorted_pairs(mapping):
     return sorted(mapping.items(), key=lambda kv: len(kv[0]), reverse=True)
 
 
-def apply_mapping(sources_dir, mapping, dry_run=False):
+def apply_mapping(sources_dir, mapping, dry_run=False, suffixes=None):
     """Replace mapping keys with values across all scanned files.
 
     Returns a report dict:
@@ -210,7 +299,7 @@ def apply_mapping(sources_dir, mapping, dry_run=False):
     Files are rewritten only when at least one replacement happened.
     """
     pairs = _sorted_pairs(mapping)
-    files = scan_files(sources_dir)
+    files = scan_files(sources_dir, suffixes=suffixes)
     report = {"files_scanned": len(files), "files_changed": 0, "total": 0,
               "replacements": {k: 0 for k, _ in pairs}, "per_file": {}}
     for path in files:
@@ -235,13 +324,13 @@ def apply_mapping(sources_dir, mapping, dry_run=False):
     return report
 
 
-def count_occurrences(sources_dir, strings):
+def count_occurrences(sources_dir, strings, suffixes=None):
     """Count occurrences of each string across scanned files (no writes).
 
     Used for post-mask / post-unmask verification: after masking, every
     real value should count 0; after unmasking, every masked value 0.
     """
-    files = scan_files(sources_dir)
+    files = scan_files(sources_dir, suffixes=suffixes)
     counts = {s: 0 for s in strings}
     for path in files:
         text, _ = _read_text(path)
@@ -299,18 +388,19 @@ def reverse_mapping(mapping):
     return reversed_map
 
 
-def mask_directory(sources_dir, mapping, dry_run=False):
+def mask_directory(sources_dir, mapping, dry_run=False, suffixes=None):
     """Mask a sources folder. Returns the apply_mapping report."""
     errors, _ = validate_mapping(mapping)
     if errors:
         raise PacError(" ".join(errors))
-    return apply_mapping(sources_dir, mapping, dry_run=dry_run)
+    return apply_mapping(sources_dir, mapping, dry_run=dry_run,
+                         suffixes=suffixes)
 
 
-def unmask_directory(sources_dir, mapping, dry_run=False):
+def unmask_directory(sources_dir, mapping, dry_run=False, suffixes=None):
     """Restore a sources folder from a {real: masked} mapping."""
     return apply_mapping(sources_dir, reverse_mapping(mapping),
-                         dry_run=dry_run)
+                         dry_run=dry_run, suffixes=suffixes)
 
 
 def mapping_path_for(sources_dir, storage_dir):
@@ -525,18 +615,22 @@ def snapshot_path_for(sources_dir, storage_dir):
     return Path(storage_dir) / f"snapshot_{safe}_{digest}.json"
 
 
-def snapshot_directory(sources_dir):
+def snapshot_directory(sources_dir, suffixes=None):
     """Fingerprint a sources folder: {relpath: {sha256, content?}}.
 
-    Content is stored only for scanned text files (``.pa.yaml`` / ``.json``)
-    under 2 MB, so inline diffs are possible; everything else is tracked
-    by hash alone. ``.git`` internals and mapping-state files are excluded.
-    The snapshot is taken AFTER masking, so it holds masked values only.
+    Content is stored only for scanned text files (the selected
+    profile's suffixes) under 2 MB, so inline diffs are possible;
+    everything else is tracked by hash alone. ``.git`` internals and
+    mapping-state files are excluded. The snapshot is taken AFTER
+    masking, so it holds masked values only.
     """
+    if suffixes is None:
+        suffixes = SCAN_SUFFIXES
     sources = Path(sources_dir)
     if not sources.is_dir():
         raise PacError(f"Sources folder not found: {sources_dir}")
-    scanned = {str(p.relative_to(sources)) for p in scan_files(sources)}
+    scanned = {str(p.relative_to(sources))
+               for p in scan_files(sources, suffixes=suffixes)}
     files = {}
     for path in sorted(sources.rglob("*")):
         if not path.is_file():
@@ -552,7 +646,7 @@ def snapshot_directory(sources_dir):
             except UnicodeDecodeError:
                 entry["content"] = None
         files[rel] = entry
-    return {"version": 1, "files": files}
+    return {"version": 1, "files": files, "suffixes": list(suffixes)}
 
 
 def save_snapshot(path, snapshot):
@@ -580,7 +674,7 @@ def load_snapshot(path):
     return data
 
 
-def diff_against_snapshot(sources_dir, snapshot, mapping):
+def diff_against_snapshot(sources_dir, snapshot, mapping, suffixes=None):
     """Compare current sources against a masked baseline snapshot.
 
     Returns {"added", "removed", "modified", "renamed": [(old, new)],
@@ -591,7 +685,9 @@ def diff_against_snapshot(sources_dir, snapshot, mapping):
     deleted it, so Unmask cannot restore it. Diff text is capped at 300
     lines per file.
     """
-    current = snapshot_directory(sources_dir)
+    if suffixes is None:
+        suffixes = tuple(snapshot.get("suffixes") or SCAN_SUFFIXES)
+    current = snapshot_directory(sources_dir, suffixes=suffixes)
     old_files = snapshot["files"]
     new_files = current["files"]
     added = sorted(set(new_files) - set(old_files))
@@ -629,7 +725,7 @@ def diff_against_snapshot(sources_dir, snapshot, mapping):
         diffs[p] = "\n".join(lines)
     # orphaned masked values: in neither contents nor filenames
     scanned_now = {str(p.relative_to(sources_dir))
-                   for p in scan_files(sources_dir)}
+                   for p in scan_files(sources_dir, suffixes=suffixes)}
     content_hits = {}
     for p in scanned_now:
         text, _ = _read_text(Path(sources_dir) / p)
@@ -665,7 +761,7 @@ LEFTOVER_PATTERNS = [
 ]
 
 
-def scan_leftovers(sources_dir, masked_values=(), limit=500):
+def scan_leftovers(sources_dir, masked_values=(), limit=500, suffixes=None):
     """Heuristic scan for sensitive-looking strings left after masking.
 
     Runs over the scanned text files, line by line. A match containing
@@ -676,7 +772,7 @@ def scan_leftovers(sources_dir, masked_values=(), limit=500):
     """
     masked = [m for m in masked_values if m]
     findings, total = [], 0
-    for path in scan_files(sources_dir):
+    for path in scan_files(sources_dir, suffixes=suffixes):
         text, _ = _read_text(path)
         rel = str(path.relative_to(sources_dir))
         for lineno, line in enumerate(text.splitlines(), 1):

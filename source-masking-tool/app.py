@@ -1,10 +1,12 @@
-"""App — Power Apps ALM & Masking Tool.
+"""App — Source Masking Tool (generalised).
 
-Unpack a .msapp with the Power Platform CLI (pac), mask sensitive strings
-so the sources can go to GitHub for AI revision, then unmask and pack back
-into a .msapp. 100% local except the GitHub step you do yourself.
+Mask sensitive strings in a project folder so the sources can go to
+GitHub for AI revision, then unmask and finish per project type:
+Power App (.msapp via pac), Power BI PBIP project (folder, no pac),
+or any generic text folder. 100% local except the GitHub step you
+do yourself.
 
-Pure logic lives in pac_core.py. Runs standalone
+Pure logic lives in masking_core.py. Runs standalone
 (`streamlit run app.py`) or inside the suite launcher.
 """
 
@@ -15,7 +17,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-import pac_core as core  # noqa: E402
+import masking_core as core  # noqa: E402
 
 try:
     import streamlit as st
@@ -23,14 +25,29 @@ except ImportError:  # pragma: no cover
     raise SystemExit("streamlit is required: pip install -r requirements.txt")
 
 try:
-    st.set_page_config(page_title="Power Apps ALM & Masking", page_icon="🎨",
+    st.set_page_config(page_title="Source Masking Tool", page_icon="🎭",
                        layout="wide")
 except Exception:
     pass  # running inside the suite launcher — page config owned by launcher.py
 
-P = "pam_"
+P = "smk_"
 STORAGE = Path(__file__).resolve().parent / "storage"
 APP_DIR = Path(__file__).resolve().parent
+
+
+def current_profile():
+    return st.session_state.get(P + "profile", "power-app")
+
+
+def current_suffixes():
+    profile = current_profile()
+    if profile == "custom":
+        try:
+            return core.get_suffixes("custom",
+                                     st.session_state.get(P + "custom_suffixes", ""))
+        except core.PacError:
+            return core.PROFILES["generic"]["suffixes"]
+    return core.get_suffixes(profile)
 
 
 def set_status(step, kind, msg):
@@ -91,16 +108,39 @@ def editor_frame():
     return pd.DataFrame(rows, columns=["Real value", "Masked value"])
 
 
-st.title("🎨 Power Apps ALM & Masking Tool")
-st.caption("Unpack → mask → GitHub + AI revision → unmask → pack. "
+st.title("🎭 Source Masking Tool")
+st.caption("Mask → GitHub + AI revision → unmask → finish per project type. "
            "Everything here runs on this machine; only the masked sources "
            "ever leave it, when you upload them yourself.")
+
+# ------------------------------------------------------------ project type
+st.header("🧩 Project type (choose before you mask)")
+profile = st.radio(
+    "What kind of sources are these?",
+    ["power-app", "pbip", "generic", "custom"],
+    format_func=lambda k: core.PROFILES[k]["label"],
+    horizontal=True, key=P + "profile")
+custom_suffixes = ""
+if current_profile() == "custom":
+    custom_suffixes = st.text_input(
+        "Custom suffixes (comma-separated, e.g. .tmdl, .json)",
+        key=P + "custom_suffixes",
+        placeholder=".tmdl, .json")
+    st.caption("Only files with these suffixes will be masked / scanned / diffed.")
+else:
+    st.caption(f"Files masked for this profile: {', '.join(current_suffixes())}")
+if current_profile() == "pbip":
+    st.info("PBIP: skip Step 1 (Unpack) and Step 5 (Pack). Point the sources folder at a COPY of your PBIP project folder (.pbip + .SemanticModel + .Report), mask it, and after unmasking open it in Power BI Desktop to refresh and test.")
+elif current_profile() in ("generic", "custom"):
+    st.info("Generic / custom: skip Step 1 (Unpack) and Step 5 (Pack). Point the sources folder at a copy of the folder, mask it, and after unmasking use the files directly.")
+else:
+    st.caption("Power App: Step 1 unpacks a .msapp with pac, Step 5 packs a new .msapp.")
 
 # ------------------------------------------------------------ workflow
 with st.container(border=True):
     st.subheader("🗺️ The workflow this tool is built for")
     st.markdown(
-        "1. **Unpack** your `.msapp` into a sources folder (Step 1).\n"
+        "1. **Get sources**: Power App → **Unpack** your `.msapp` (Step 1); PBIP / generic → point Step 2 at a copy of the project folder (no unpack).\n"
         "2. **Define the mapping and mask** the sources — file contents AND "
         "file/folder names (Step 2). Run the leftover scan, then upload "
         "only the masked sources folder to GitHub (or grab the ZIP).\n"
@@ -115,8 +155,8 @@ with st.container(border=True):
         "the sensitive data), or the backup folder. The mapping file lives "
         "in this app's `storage/` folder, which the repo `.gitignore` "
         "already excludes — and it is never written inside the sources folder.")
-    st.info("⚠️ Masking is exact-text replacement on `.pa.yaml` and `.json` "
-            "files only. After masking, always check the verification report "
+    st.info("⚠️ Masking is exact-text replacement on the selected profile's text files only (see the profile selector below). "
+            "After masking, always check the verification report "
             "and eyeball the result before uploading — anything not in your "
             "mapping (a new URL, a differently-spelled table name) stays "
             "in the sources as-is.")
@@ -285,7 +325,7 @@ with st.container(border=True):
                     raise core.PacError("Please enter the sources folder path above.")
                 if not mapping_dict():
                     raise core.PacError("The mapping is empty — save at least one row first.")
-                report = core.mask_directory(sources, mapping_dict(), dry_run=True)
+                report = core.mask_directory(sources, mapping_dict(), dry_run=True, suffixes=current_suffixes())
                 rrep = core.rename_paths(sources, mapping_dict(), dry_run=True)
                 st.session_state[P + "dry_report"] = report
                 st.session_state[P + "dry_renames"] = rrep
@@ -306,16 +346,15 @@ with st.container(border=True):
                     bpath = core.backup_directory(sources, STORAGE / "backups")
                     st.info(f"Backup created: {bpath}")
                 with st.spinner("Masking…"):
-                    report = core.mask_directory(sources, mapping_dict())
+                    report = core.mask_directory(sources, mapping_dict(), suffixes=current_suffixes())
                     rrep = core.rename_paths(sources, mapping_dict())
                 mpath = core.save_mapping_state(
                     core.mapping_path_for(sources, STORAGE), mapping_dict(),
                     rrep["renames"])
                 spath = core.save_snapshot(
                     core.snapshot_path_for(sources, STORAGE),
-                    core.snapshot_directory(sources))
-                leftover = core.scan_leftovers(
-                    sources, masked_values=list(mapping_dict().values()))
+                    core.snapshot_directory(sources, suffixes=current_suffixes()))
+                leftover = core.scan_leftovers(sources, masked_values=list(mapping_dict().values()), suffixes=current_suffixes())
                 st.session_state[P + "mask_report"] = report
                 st.session_state[P + "mask_renames"] = rrep
                 st.session_state[P + "mapping_path"] = str(mpath)
@@ -349,7 +388,7 @@ with st.container(border=True):
         mask_r = st.session_state.get(P + "mask_renames")
         if mask_r:
             show_renames(mask_r)
-        show_verification(core.count_occurrences(sources, list(mapping_dict())),
+        show_verification(core.count_occurrences(sources, list(mapping_dict()), suffixes=current_suffixes()),
                           "real")
     st.divider()
     st.subheader("🔍 Leftover sensitive-value scan")
@@ -362,8 +401,7 @@ with st.container(border=True):
         try:
             if not sources.strip():
                 raise core.PacError("Please enter the sources folder path above.")
-            st.session_state[P + "leftover"] = core.scan_leftovers(
-                sources, masked_values=list(mapping_dict().values()))
+            st.session_state[P + "leftover"] = core.scan_leftovers(sources, masked_values=list(mapping_dict().values()), suffixes=current_suffixes())
         except core.PacError as exc:
             set_status("mask", "error", str(exc))
         st.rerun()
@@ -498,7 +536,7 @@ with st.container(border=True):
             mapping = _load_diff_mapping()
             snap = core.load_snapshot(
                 core.snapshot_path_for(sources, STORAGE))
-            d = core.diff_against_snapshot(sources, snap, mapping)
+            d = core.diff_against_snapshot(sources, snap, mapping, suffixes=current_suffixes())
             st.session_state[P + "diff_report"] = d
             set_status("diff", "success" if not d["orphaned_masked"] else "error",
                        f"Added: {d['counts']['added']} · removed: "
@@ -574,7 +612,7 @@ with st.container(border=True):
                 rrep = core.rename_paths(
                     sources, core.reverse_mapping(mapping),
                     dry_run=True, topdown=True)
-                report = core.unmask_directory(sources, mapping, dry_run=True)
+                report = core.unmask_directory(sources, mapping, dry_run=True, suffixes=current_suffixes())
                 st.session_state[P + "unmask_dry_renames"] = rrep
                 st.session_state[P + "unmask_dry_report"] = report
                 set_status("unmask", "info",
@@ -589,7 +627,7 @@ with st.container(border=True):
                 with st.spinner("Restoring…"):
                     rrep = core.rename_paths(
                         sources, core.reverse_mapping(mapping), topdown=True)
-                    report = core.unmask_directory(sources, mapping)
+                    report = core.unmask_directory(sources, mapping, suffixes=current_suffixes())
                 st.session_state[P + "unmask_renames"] = rrep
                 st.session_state[P + "unmask_report"] = report
                 st.session_state[P + "unmask_mapping"] = mapping
@@ -620,12 +658,13 @@ with st.container(border=True):
             show_renames(urep_r)
         show_verification(
             core.count_occurrences(
-                sources, list(st.session_state[P + "unmask_mapping"].values())),
+                sources, list(st.session_state[P + "unmask_mapping"].values()),
+                suffixes=current_suffixes()),
             "masked")
 
 
 # ------------------------------------------------------------ step 5: pack
-st.header("⑤ Pack — source code → .msapp")
+st.header("⑤ Finish — pack (Power App) / open in Desktop (PBIP) / use directly (generic)")
 with st.container(border=True):
     show_status("pack")
     out_path = st.text_input(
@@ -634,8 +673,16 @@ with st.container(border=True):
         help="The new .msapp is built from the (unmasked) sources folder "
              "above. Use a new filename so the original stays untouched.",
         key=P + "pack_out")
-    if st.button("📦 Pack", key=P + "pack_btn"):
+    if st.button("📦 Pack / Finish", key=P + "pack_btn"):
         try:
+            if current_profile() == "pbip":
+                set_status("pack", "info",
+                           "PBIP needs no pack: open the unmasked folder in Power BI Desktop, refresh, test, then publish. Do not upload the unmasked folder to GitHub.")
+                st.rerun()
+            if current_profile() in ("generic", "custom"):
+                set_status("pack", "info",
+                           "Generic / custom projects need no pack: use the unmasked files directly.")
+                st.rerun()
             if not sources.strip():
                 raise core.PacError("Please enter the sources folder path above.")
             if not (out_path or "").strip():
@@ -655,7 +702,7 @@ with st.container(border=True):
         with st.expander("pac output"):
             st.code(log)
 
-st.caption("Tip: after the AI revises the code on GitHub, download the "
+st.caption("Tip: after the AI revises the sources on GitHub, download the "
            "revised sources and diff them against your masked copy before "
            "unmasking — if the AI renamed a masked value, unmasking cannot "
            "restore it, and you will want to catch that in the diff.")

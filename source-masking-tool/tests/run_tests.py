@@ -1,4 +1,4 @@
-"""Tests for power-apps-alm-masking/pac_core.py. No Streamlit needed.
+"""Tests for source-masking-tool/masking_core.py. No Streamlit needed.
 
 Run:  python3 tests/run_tests.py   (from the app directory)
 """
@@ -10,7 +10,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import pac_core as core  # noqa: E402
+import masking_core as core  # noqa: E402
 
 passed = 0
 
@@ -327,5 +327,58 @@ import zipfile as _zf
 import io as _io
 names = _zf.ZipFile(_io.BytesIO(core.zip_sources_bytes(src10))).namelist()
 check("zip contents", names == ["a.pa.yaml"], names)
+
+
+# --- profiles: PBIP, generic, custom -------------------------------------------
+check("profiles present", set(core.PROFILES) >= {"power-app", "pbip", "generic", "custom"})
+check("pbip suffixes", core.get_suffixes("pbip") == (".tmdl", ".json", ".pbip"))
+check("generic suffixes include tmdl/md", ".tmdl" in core.get_suffixes("generic") and ".md" in core.get_suffixes("generic"))
+check("custom suffixes parsed", core.get_suffixes("custom", ".tmdl, json") == (".tmdl", ".json"))
+try:
+    core.get_suffixes("nope")
+    check("unknown profile rejected", False)
+except core.PacError:
+    check("unknown profile rejected", True)
+
+tmp11 = Path(tempfile.mkdtemp())
+src11 = tmp11 / "PBIP"
+(src11 / "MyModel.SemanticModel" / "definition" / "tables").mkdir(parents=True)
+(src11 / "MyModel.SemanticModel" / "definition" / "tables" / "Sales.tmdl").write_text(
+    'table Sales\n  source: "https://real-company.sharepoint.com/sites/X"\n', encoding="utf-8")
+(src11 / "MyModel.Report").mkdir(parents=True)
+(src11 / "MyModel.Report" / "definition.json").write_text(
+    '{"site": "https://real-company.sharepoint.com/sites/X"}', encoding="utf-8")
+(src11 / "MyModel.pbip").write_text(
+    '{"version": "1.0", "site": "https://real-company.sharepoint.com/sites/X"}', encoding="utf-8")
+(src11 / "notes.txt").write_text("https://real-company.sharepoint.com/sites/X should NOT be touched in pbip profile.", encoding="utf-8")
+pbip_suffixes = core.get_suffixes("pbip")
+rep = core.mask_directory(src11, {"https://real-company.sharepoint.com": "https://masked-url.com"}, suffixes=pbip_suffixes)
+check("pbip files scanned", rep["files_scanned"] == 3, rep)
+check("pbip tmdl masked", "https://masked-url.com" in (src11 / "MyModel.SemanticModel" / "definition" / "tables" / "Sales.tmdl").read_text())
+check("pbip txt untouched", "https://real-company.sharepoint.com" in (src11 / "notes.txt").read_text())
+rep = core.unmask_directory(src11, {"https://real-company.sharepoint.com": "https://masked-url.com"}, suffixes=pbip_suffixes)
+check("pbip unmask restores tmdl", "https://real-company.sharepoint.com" in (src11 / "MyModel.SemanticModel" / "definition" / "tables" / "Sales.tmdl").read_text())
+
+tmp12 = Path(tempfile.mkdtemp())
+src12 = tmp12 / "G"
+src12.mkdir()
+(src12 / "a.md").write_text("RealTableName here\n", encoding="utf-8")
+(src12 / "b.yaml").write_text("table: RealTableName\n", encoding="utf-8")
+(src12 / "c.bin").write_bytes(b"RealTableName")
+rep = core.mask_directory(src12, {"RealTableName": "MaskedTableA"}, suffixes=core.get_suffixes("generic"))
+check("generic md+yaml masked", rep["files_scanned"] == 2, rep)
+check("generic bin untouched", b"RealTableName" in (src12 / "c.bin").read_bytes())
+
+# snapshot/diff with pbip suffixes
+tmp13 = Path(tempfile.mkdtemp())
+src13 = tmp13 / "S"
+src13.mkdir()
+(src13 / "x.tmdl").write_text("a: MaskedTableA\n", encoding="utf-8")
+snap = core.snapshot_directory(src13, suffixes=core.get_suffixes("pbip"))
+check("pbip snapshot suffixes recorded", snap.get("suffixes") == list(core.get_suffixes("pbip")), snap)
+(src13 / "x.tmdl").write_text("a: CHANGED\n", encoding="utf-8")
+diff = core.diff_against_snapshot(src13, snap, {"RealTableName": "MaskedTableA"}, suffixes=core.get_suffixes("pbip"))
+check("pbip diff modified", diff["modified"] == ["x.tmdl"], diff)
+check("pbip diff orphaned", [o["masked"] for o in diff["orphaned_masked"]] == ["MaskedTableA"], diff)
 
 print(f"\n{passed} checks passed")
